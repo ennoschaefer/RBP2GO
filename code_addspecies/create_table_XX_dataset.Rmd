@@ -1,0 +1,449 @@
+---
+title: "create_table_Dataset"
+author: "Enno Schäfer"
+date: "2023-07-28"
+output: html_document
+---
+
+###### Dependencies
+-   needs GO_list.csv
+
+###### Packages needed (first trouble shoot here if something is not working!)
+
+```{r libraries, eval=T, include=T, tidy=TRUE}
+library(AnnotationDbi)
+library(GO.db)
+
+#if (!nzchar(system.file(package="dplyr"))){install.packages("dplyr", dependencies = T)}
+library(dplyr)
+#if (!nzchar(system.file(package="readr"))){install.packages("readr", dependencies = T)}
+library(readr)
+```
+
+ALSO NOTE: - "fastmap" needs to be on version 1.1.1 - "xfun" must be on
+version \>=0.39
+
+-   GO.db needs other packages: R, methods, AnnotationDbi
+-   AnnotationDbi needs: DBI, RSQLite, S4Vectors, stats, KEGGREST
+
+In case GO.db and Annotation.DBi are not installed on your laptop yet, download it by running this chunk:
+```{r}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+  #install.packages("BiocManager")
+
+#BiocManager::install("GO.db")
+
+
+#if (!require("BiocManager", quietly = TRUE))
+    #install.packages("BiocManager")
+
+#BiocManager::install("AnnotationDbi")
+```
+
+
+
+###### INPUTS THAT NEED TO BE PROVIDED
+
+There are 4 databanks, that we need to download data from. 
+  1) Uniprot (https://www.uniprot.org/) /// HOW TO DOWNLOAD THE CORRECT DATASET: search for the organism to be added and choose the reviewed proteins (carry a yellow symbol). Download the following columns by clicking "Customize columns" IN THIS EXACT ORDER (important for code   below):  "Entry Name, Protein names, Mass, Length, Gene Names, Gene Names (synonym), Gene Ontology(biological process), GO (molecular function), GO (cellular component), InterPro"
+  
+  2) proteome Isoelectric point -> pI (http://isoelectricpointdb.org/search.html (newer version:) https://isoelectricpointdb2.mimuw.edu.pl/search.html) /// HOW TO DOWNLOAD THE CORRECT DATASET: search for the organism to be added and download the isoelectric points of all proteins, so the whole proteome.
+  
+  3) String for Protein-protein interaction (https://string-db.org) /// HOW TO DOWNLOAD THE CORRECT DATASET: Go to the download section and look for the organism to be added. Click "update" and download the data file that looks like this "XXXX.protein.links.v12.0.txt.gz" with XXXX being a taxonomy ID for the resepective organism.
+  
+  4) MobiDB gives a disorder score(https://mobidb.bio.unipd.it/) /// HOW TO DOWNLOAD THE CORRECT DATASET: Click browse. Then select NCBI Taxon ID as search option. Enter the taxon ID of your organism and download the data as a TSV file.
+  
+
+- put all downloaded Dataframes from the different databanks into one directory
+- Set the working directory with "setdw" to that folder and complete the import statements for your Dataframes
+- provide the species name and abbreviation
+- provide a list of RBPs from a study with their uniprot ID
+
+```{r}
+setwd("") #works only if the chunk is run at once! 
+
+uniprot <- read_tsv("", show_col_types = FALSE) 
+pI <- read.csv("")
+string <- read.table("", header = TRUE)
+mobidb <- read_tsv("", show_col_types = FALSE)
+
+species <- ""
+abbreviation_species <- ""
+
+#provide RBPs here
+#...
+
+#dont change this import and provide the GO_list.csv in the working directory to load the file, it wil be important for the GO analysis 
+GO_Name_ID <- read.table("GO_list.csv", header=T, sep = ";", comment.char = "", check.names = F, quote = "\"", stringsAsFactors = F, colClasses = c(rep('character',3)))
+```
+
+
+
+Were the mRNAs in the studies enriched with Poly(A) enrichment? Type "y" for yes, "n" for no! --> Not implemented for studies with different Poly(A) enrichment statuses.
+
+```{r}
+poly_a = ""  
+```
+
+
+
+One has to look through the whole Uniprot dataset **BY-HAND**. The protein_names are **not** formatted in a strict order. Therefore, one has to handpick unusual names to treat them differently. Normal protein_names look like this: "Enhancer of rudimentary homolog 1"/"Histone deacetylase phd1 (EC 3.5.1.98)". They either carry no parenthesis or at the end. Therefore, everything behind the opening parenthesis "(" can simply be deleted. However there are protein_names that contain opening parenthesis that are not located at the end. I defined the following categories:
+
+1)  UNDELETED is used to protect opening parenthesis that are not to be
+    deleted (e.g.: "Na(+)/H(+) antiporter" to return "Na(+)/H(+)
+    antiporter")
+2)  SQUARED_PAR is to delete after a opening squared parenthesis "["
+    (e.g.:"Polyubiquitin [Cleaved into: Ubiquitin]" to return
+    "Polyubiquitin")
+3)  SECOND_PAR is used to delete from the second opening parenthesis on
+    (e.g.: "25S rRNA adenine-N(1) methyltransferase (EC 2.1.1.-) to
+    return"25S rRNA adenine-N(1) methyltransferase")
+4)  THIRD_PAR is like SECOND_PAR, just deleting from the third opening
+    parenthesis (e.g.:"Fe(2+)/Mn(2+) transporter pcl1 (Pombe ccc1-like
+    protein 1)" to return "Fe(2+)/Mn(2+) transporter pcl1")
+5)  FOURTH_PAR is like SECOND_PAR and THIRD_PAR (e.g.: "U6 small nuclear
+    RNA (adenine-(43)-N(6))-methyltransferase (EC 2.1.1.346)" to return
+    "U6 small nuclear RNA (adenine-(43)-N(6))-methyltransferase")
+
+```{r}
+#all unusual_names from all categories
+unusual_names = c()
+
+#seperate unusual_names in categories
+undeleted = unusual_names[c()]
+squared_par = unusual_names[c()]
+second_par = unusual_names[c()]
+third_par = unusual_names[c()]
+fourth_par = unusual_names[c()]
+```
+
+
+------------------------------------------------------------------------
+###### Code that calculates the Datasets
+
+The expected output of this Rmd file are two Dataframes:
+-   table_XX_Dataset
+-   table_XX_Non_Listed_Proteins
+
+```{r}
+############# UNIPROT (including InterPro Domains) #################
+
+#import TSV file with UniProt data into data frame
+uniprot_df <- uniprot
+
+#Mass: [Da] to [kDa]
+uniprot_df$Mass = uniprot_df$Mass/1000  
+
+#reset gene name
+cleaned_uniprot = uniprot_df
+cleaned_uniprot$`Gene Names` = gsub("^(\\S+).*", "\\1", cleaned_uniprot$`Gene Names`)
+
+
+
+##clean protein name of EC numbers and other annotations ## 
+#change "protein names"
+for (i in 1:dim(cleaned_uniprot)[1]) {
+  if (i %in% undeleted) {
+    #dont delete anything
+    next
+    
+  } else if (i %in% second_par) {
+    #delete from second bracket on 
+    cleaned_entry <- sub("^(.*?\\(.*?\\().*", "\\1", 
+                         cleaned_uniprot$`Protein names`[i])
+    cleaned_entry <- sub(" \\($","",cleaned_entry)
+    cleaned_uniprot$`Protein names`[i] <- cleaned_entry 
+    
+  } else if (i %in% third_par) {
+    #delete from third bracket on
+    cleaned_entry <- sub("^(.*?\\(.*?\\(.*?\\().*", "\\1",  
+                         cleaned_uniprot$`Protein names`[i])
+    cleaned_entry <- sub(" \\($","",cleaned_entry)
+    cleaned_uniprot$`Protein names`[i] <- cleaned_entry 
+    
+  } else if (i %in% fourth_par) {
+    #delete from fourth bracket on
+    cleaned_entry <- sub("^(.*?\\(.*?\\(.*?\\(.*?\\().*", "\\1",  
+                         cleaned_uniprot$`Protein names`[i])
+    cleaned_entry <- sub(" \\($","",cleaned_entry)
+    cleaned_uniprot$`Protein names`[i] <- cleaned_entry 
+    
+  } else if (i %in% squared_par) {
+    #delete from "[" on
+    cleaned_entry <- sub(" \\[.*$", "", cleaned_uniprot$`Protein names`[i])
+    cleaned_uniprot$`Protein names`[i] <- cleaned_entry 
+    
+  } else {
+    #general: deleting from first opening parenthesis on
+    cleaned_uniprot$`Protein names`[i] = sub("\\s*\\(.*", "", 
+                                             cleaned_uniprot$`Protein names`[i])
+  }
+
+}
+
+
+colnames(cleaned_uniprot) <- c("Uniprot_ID","Entry_Name", "Protein_Name", "Mass_kDa", "Length_AA", "Gene_Name", "Alias_Names", "GO_BP", "GO_MF", "GO_CC", "InterPro")
+
+#add columns to table_Dataset
+table_Dataset <- data.frame()
+table_Dataset <- cleaned_uniprot
+```
+
+```{r}
+########## pI #######################
+pI_df <- pI
+
+pI_df$Uniprot_ID <- sub("^>sp\\|(.{6}).*", "\\1", pI_df$header)
+names(pI_df)[names(pI_df) == "Avg_pI"] = "pI"
+
+#might contain duplicates:
+if (sum(duplicated(pI_df$Uniprot_ID) > 0)){
+  duplicates = which(duplicated(pI_df$Uniprot_ID)) 
+  pI_df = pI_df[-duplicates,]
+  print("pI_df contained mulitple values for pIs for one protein. Only one random value of the multiple values was kept")
+}
+
+#add column to table_Dataset
+table_Dataset <- left_join(table_Dataset, dplyr::select(pI_df, Uniprot_ID, pI), by = "Uniprot_ID")
+```
+
+```{r}
+########## String ###################
+string_df <- string
+
+#reorder interaction pairs into lists
+listed_string_df <- string_df %>%
+  group_by(protein1) %>%
+  summarise(protein2 = paste(protein2, collapse = "; "),
+            combined_score = paste(combined_score, collapse = "; "))
+
+# create UniprotID to merge dataframes
+listed_string_df$Uniprot_ID = sub(".*\\.(.{6}).*", "\\1", listed_string_df$protein1)
+colnames(listed_string_df) = c("String_ID","String_PPI", "String_PPI_Scores", "Uniprot_ID")
+
+#might contain duplicates:
+if (sum(duplicated(listed_string_df$Uniprot_ID) > 0)){
+  duplicates = which(duplicated(listed_string_df$Uniprot_ID)) 
+  listed_string_df = listed_string_df[-duplicates,]
+  print("listed_string_df contained mulitple values for String interactions for one protein. Only one random value of the multiple values was kept")
+}
+
+#add columns to table_Dataset
+table_Dataset <- left_join(table_Dataset, listed_string_df, by = "Uniprot_ID")
+```
+
+```{r}
+######### MoBidb ###################
+mobidb_df <- mobidb
+
+names(mobidb_df)[names(mobidb_df) == "acc"] = "Uniprot_ID"
+names(mobidb_df)[names(mobidb_df) == "content_fraction"] = "IDR_content_fraction"
+
+
+#select "prediction-disorder-mobidb_lite" from the feature coulmn to select the correct content_fraction
+disorder = which(mobidb_df$feature== "prediction-disorder-mobidb_lite")
+mobidb_df = mobidb_df [disorder,]
+
+#might contain duplicates:
+if (sum(duplicated(mobidb_df$Uniprot_ID) > 0)){
+  duplicates = which(duplicated(mobidb_df$Uniprot_ID)) 
+  mobidb_df = mobidb_df[-duplicates,]
+  print("mobidb_df contained mulitple values for String interactions for one protein. Only one random value of the multiple values was kept")
+}
+
+#add columns to table_Dataset
+table_Dataset <- left_join(table_Dataset,  dplyr::select(mobidb_df, Uniprot_ID, IDR_content_fraction), by = "Uniprot_ID")
+```
+
+```{r}
+######## Calculate GO_ancestor terms ############
+
+# Biological process (GO aspect or GO source)
+BP <- as.list(GOBPANCESTOR)
+# Molecular function
+MF <- as.list(GOMFANCESTOR)
+# Cellular component
+CC <- as.list(GOCCANCESTOR)
+
+# Read table with GO information -> happens in chunk 3 when reading the GO_list.csv!
+
+# For each protein, and each GO aspect, get the complete ancestor tree for all the GO terms listed.
+GO_terms_BP <- table_Dataset$GO_BP
+GO_terms_MF <- table_Dataset$GO_MF
+GO_terms_CC <- table_Dataset$GO_CC
+
+
+# Get the ancestor GO terms for each listed GO term
+for (i in 1:length(GO_terms_BP)) {
+  temp_BP <- NULL
+  Ancestor_BP <- NULL
+  temp_BP <- GO_terms_BP[i]
+  # Separate the GO terms
+  temp_BP <- unlist(strsplit(temp_BP,"; "))
+  # Obtain only the part in [] with the GO ID
+  # second possible regex expression: gregexpr("GO:[0-9]{7}",temp_BP)
+  temp_BP <- unlist(regmatches(temp_BP, gregexpr("\\[\\K[^{}]+(?=\\])", temp_BP, perl=TRUE)))
+  # Get ancestor for each GO term
+  Ancestor_BP <- as.character(unlist(unlist(BP[temp_BP])))
+  # fuse GO term and ancestors
+  temp_BP <- unique(c(temp_BP, Ancestor_BP))
+  # Keep only the names which are listed in the GO_Name_ID table. For the other, I don't have enough information
+  temp_BP <- temp_BP[temp_BP %in% GO_Name_ID$`GO ID`]
+  # Get the corresponding GO name and ID together
+  temp_BP <- GO_Name_ID[GO_Name_ID$`GO ID` %in% temp_BP,"GO_Name_ID"]
+  temp_BP <- paste(temp_BP, collapse = '; ')
+  GO_terms_BP[i] <- temp_BP
+}
+
+
+for (i in 1:length(GO_terms_MF)) {
+  temp_MF <- NULL
+  Ancestor_MF <- NULL
+  temp_MF <- GO_terms_MF[i]
+  # Separate the GO terms
+  temp_MF <- unlist(strsplit(temp_MF,"; "))
+  # Obtain only the part in [] with the GO ID
+  temp_MF <- unlist(regmatches(temp_MF, gregexpr("\\[\\K[^{}]+(?=\\])", temp_MF, perl=TRUE)))
+  # Get ancestor for each GO term
+  Ancestor_MF <- as.character(unlist(unlist(MF[temp_MF])))
+  # fuse GO term and ancestors
+  temp_MF <- unique(c(temp_MF, Ancestor_MF))
+  # Keep only the names which are listed in the GO_Name_ID table. For the other, I don't have enough information
+  temp_MF <- temp_MF[temp_MF %in% GO_Name_ID$`GO ID`]
+  # Get the corresponding GO name and ID together
+  temp_MF <- GO_Name_ID[GO_Name_ID$`GO ID` %in% temp_MF,"GO_Name_ID"]
+  temp_MF <- paste(temp_MF, collapse = "; ")
+  GO_terms_MF[i] <- temp_MF
+}
+
+for (i in 1:length(GO_terms_CC)) {
+  temp_CC <- NULL
+  Ancestor_CC <- NULL
+  temp_CC <- GO_terms_CC[i]
+  # Separate the GO terms
+  temp_CC <- unlist(strsplit(temp_CC,"; "))
+  # Obtain only the part in [] with the GO ID
+  temp_CC <- unlist(regmatches(temp_CC, gregexpr("\\[\\K[^{}]+(?=\\])", temp_CC, perl=TRUE)))
+  # Get ancestor for each GO term
+  Ancestor_CC <- as.character(unlist(unlist(CC[temp_CC])))
+  # fuse GO term and ancestors
+  temp_CC <- unique(c(temp_CC, Ancestor_CC))
+  # Keep only the names which are listed in the GO_Name_ID table. For the other, I don't have enough information
+  temp_CC <- temp_CC[temp_CC %in% GO_Name_ID$`GO ID`]
+  # Get the corresponding GO name and ID together
+  temp_CC <- GO_Name_ID[GO_Name_ID$`GO ID` %in% temp_CC,"GO_Name_ID"]
+  temp_CC <- paste(temp_CC, collapse = '; ')
+  GO_terms_CC[i] <- temp_CC
+}
+
+# Replace the columns in the table
+table_Dataset$GO_BP_tree <- GO_terms_BP
+table_Dataset$GO_MF_tree <- GO_terms_MF
+table_Dataset$GO_CC_tree <- GO_terms_CC
+```
+
+```{r}
+####### CLEAN-UP FOR GO ANCESTOR TERMS #######
+# Test number of GO terms
+#vect_table <- as.matrix(1:dim(table_Dataset)[1])
+#table_Dataset$Nb_GO_BP <- apply(
+#  vect_table, 1, function(x) {
+#    Nb_GO_BP <- length(unlist(strsplit(GO_terms_BP[x],"; "))) 
+#    Nb_GO_BP
+#    }
+#)
+#table_Dataset$Nb_GO_MF <- apply(
+#  vect_table, 1, function(x) {
+#    Nb_GO_MF <- length(unlist(strsplit(GO_terms_MF[x],"; ")))  
+#    Nb_GO_MF
+#  }
+#)
+#table_Dataset$Nb_GO_CC <- apply(
+#  vect_table, 1, function(x) {
+#    Nb_GO_CC <- length(unlist(strsplit(GO_terms_CC[x],"; ")))  
+#    Nb_GO_CC
+#  }
+#)
+```
+
+```{r}
+####### ADD POLY(A) ENRICHMENT INFO #################
+
+table_Dataset$`Only with poly(A) enrichment` <- NA
+table_Dataset$`Only without poly(A) enrichment` <- NA
+
+if (poly_a == "y") {
+  table_Dataset$`Only with poly(A) enrichment`[is.na(
+    table_Dataset$`Only with poly(A) enrichment`)] <- "X"
+} else if (poly_a == "n"){
+  table_Dataset$`Only without poly(A) enrichment`[is.na(
+    table_Dataset$`Only without poly(A) enrichment`)] <- "X"
+}
+```
+
+```{r}
+######## calculate domain_score, nb_RBDs_individual, RBDs_nb and RBDs_content_fraction with Elsa's script
+
+```
+
+```{r}
+######## calculate RBP2GO_Score, Nb_Datasets, Listing_Count, AVG10_Int_Listing_Count and Composite_Score with Fabio's script --> needs domain score from Elsa' script!
+
+
+```
+
+```{r}
+####### calculate has_RBD, RBD_list, has_fam_ID, Fam_ID_list and RBP status
+
+```
+
+
+
+Homologe - Download von extra Datensatz über UniPort/ref und dann
+berechnen von den vier Spalten aus diesem extra Datensatz - Maiwen hat
+vllt nen Skript dafür -\> beispielhaft für HS:
+Orthologs_Analysis_Human50.R) getrennt für RBP proteins und nicht RBPs
+
+```{r}
+######## Homologs ###################
+#vllt geht das hier?
+#source("C:/Users/ennow/Enno_PC/Hiwi/Code_table_Dataset/Orthologs_Analysis_Human50_copy.R")
+```
+
+```{r}
+## TYING ALL THE DATABASES TOGETHER ## 
+
+#rearranging columns to bring them in the correct order
+table_Dataset <- table_Dataset[...]
+
+#double-checking column names
+column_names = c("Entry_Name", "Uniprot_ID", "Protein_Name", "RBP2GO_Score", "Nb_Datasets", "Listing_Count", "AVG10_Int_Listing_Count", "Mass_kDa", "Length_AA", "pI", "Gene_Name", "Alias_Names", "Only with poly(A) enrichment", "Only without ploy(A) enrichment", "GO_BP", "GO_MF", "GO_CC", "String_ID", "String_PPI", "String_PPI_Scores", "GO_BP_Tree", "GO_MF_Tree", "GO_CC_Tree", "Nb_Homologs", "Nb_RBP_Homologs", "List_Homologs", "List_RBP_Homologs", "InterPro", "has_RBD", "RBDs_nb", "RBDs_content_fraction", "RBD_list", "has_fam_ID", "Fam_ID_list", "Domain_score", "Composite_Score", "RBP_status", "nb_RBDs_individual", "IDR_content_fraction")
+
+if (!all(colnames(table_Dataset) == column_names)) {stop("The columnnames do not match the intended list. Therefore, the table_Dataset must contain errors.")}
+
+
+# Format the table
+# Set columns as numeric accordingly
+#table_Dataset$Mass_KDa <- as.numeric(table_Dataset$Mass_KDa)
+#table_Dataset$Length_AA <- as.numeric(table_Dataset$Length_AA)
+#table_Dataset$pI <- as.numeric(table_Dataset$pI)
+
+# Remove NAs in columns:
+##table_Dataset$Mass_KDa <- unlist(rapply(list(table_Dataset$Mass_KDa), f=function(x) ifelse(is.na(x),"",x), how="replace") )
+#table_Dataset$Length_AA <- unlist(rapply(list(table_Dataset$Length_AA), f=function(x) ifelse(is.na(x),"",x), how="replace") )
+#table_Dataset$pI <- unlist(rapply(list(table_Dataset$pI), f=function(x) ifelse(is.na(x),"",x), how="replace") )
+```
+
+```{r}
+## CREATE TABLE_DATASET AND TABLE_NON_LISTED_PROTEINS ## 
+
+#create list/vector to check multiple studies for it
+RBPs = c(read_csv("C:/Users/ennow/Enno_PC/Hiwi/Pombe Daten/23.Kilchert_S.pombe.csv"))
+
+# use RBPs to split up into two dataframes
+table_XX_Dataset = 
+assign(paste("table_", abbreviation_species, "_Dataset", sep = ""), table_Dataset) 
+
+table_XX_Non_Listed_Proteins = 
+assign(paste("table_", abbreviation_species, "_Dataset", sep = ""), table_XX_Non_Listed_Proteins) 
+```
