@@ -1,0 +1,820 @@
+---
+title: "create_table_Dataset"
+author: "Enno Schäfer"
+date: "2023-07-28"
+output: html_document
+---
+
+###### Dependencies
+-   needs GO_list.csv
+(used in R 4.3.1)
+
+###### Packages needed (first trouble shoot here if something is not working!)
+
+```{r libraries, eval=T, include=T, tidy=TRUE}
+library(AnnotationDbi)
+library(GO.db)
+
+library(valr)
+library(dplyr)
+library(readr)
+library(stringr)
+library(tidyr)
+```
+
+ALSO NOTE: - "fastmap" needs to be on version 1.1.1 - "xfun" must be on
+version \>=0.39
+
+-   GO.db needs other packages: R, methods, AnnotationDbi
+-   AnnotationDbi needs: DBI, RSQLite, S4Vectors, stats, KEGGREST
+
+In case GO.db and Annotation.DBi are not installed on your laptop yet, download it by running this chunk:
+```{r}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+  #install.packages("BiocManager")
+
+#BiocManager::install("GO.db")
+
+
+#if (!require("BiocManager", quietly = TRUE))
+    #install.packages("BiocManager")
+
+#BiocManager::install("AnnotationDbi")
+```
+
+
+
+###### INPUTS THAT NEED TO BE PROVIDED
+
+There are 4 databanks, that we need to download data from. 
+  1) Uniprot (https://www.uniprot.org/) /// HOW TO DOWNLOAD THE CORRECT DATASET: search for the organism to be added and choose the reviewed proteins. Download the following columns IN THIS EXACT ORDER (important for code   below):  "Entry Name, Protein names, Mass, Length, Gene Names, Gene Names (synonym), Gene Ontology(biological process), GO (molecular function), GO (cellular component), InterPro"
+  
+  2) proteome Isoelectric point -> pI (http://isoelectricpointdb.org/search.html (newer version:) https://isoelectricpointdb2.mimuw.edu.pl/search.html) /// HOW TO DOWNLOAD THE CORRECT DATASET: search for the organism to be added and download the isoelectric points of all proteins, so the whole proteome.
+  
+  3) String for Protein-protein interaction (https://string-db.org) /// HOW TO DOWNLOAD THE CORRECT DATASET: Go to the download section and look for the organism to be added. Click "update" and download the data file that looks like this "XXXX.protein.links.v12.0.txt.gz" with XXXX being a taxonomy ID for the resepective organism.
+  
+  4) MobiDB gives a disorder score(https://mobidb.bio.unipd.it/) /// HOW TO DOWNLOAD THE CORRECT DATASET: Click browse. Then select NCBI Taxon ID as search option. Enter the taxon ID of your organism and download the data as a TSV file.
+  
+
+- put all downloaded Dataframes from the different databanks into one directory
+- Set the working directory with "setdw" to that folder and complete the import statements for your Dataframes
+- provide the species name and abbreviation
+
+*IMPORTS FROM DATABANKS*
+```{r}
+uniprot <- read_tsv("../Input/Downloads/SP_uniprot.tsv", show_col_types = FALSE) 
+pI <- read.csv("../Input/Downloads/SP_pI.csv")
+string <- read.table("../Input/Downloads/SP_string.txt", header = TRUE)
+mobidb <- read_tsv("../Input/Downloads/SP_mobidb.tsv", show_col_types = FALSE)
+
+species_longname <- "Schizosaccharomyces pombe"
+species <- "SP"
+
+#----------------------------------------------
+rbp_pombe = read_tsv("../Input/Downloads/SP_Kilchert.tsv", show_col_types = F) # study identifying RBPs
+
+GO_Name_ID <- read.table("../Input/Downloads/GO_list.csv", header=T, sep = ";", comment.char = "", check.names = F, quote = "\"", stringsAsFactors = F, colClasses = c(rep('character',3))) # for GO_tree analysis
+```
+
+
+*IMPORTS TO CALCULATE SCORES WITH OTHER PEOPLES CODE*
+```{r}
+list_RBDs <- readRDS("../Output/Extended_RBP2GO/RBD_selected.rds") %>% 
+  dplyr::select(InterPro_ID) %>%
+  rbind(readRDS("../Output/New_RBDs/HS_newly_discovered_RBDs_select.RDS") %>%
+          dplyr::select(domains) %>%
+          unique() %>%
+          dplyr::rename(InterPro_ID = domains)) %>%
+  pull(InterPro_ID)
+
+Fam_ID_sel <- readRDS("../Output/Extended_RBP2GO/Fam_IDs_selected.RDS") %>%
+  pull(InterPro_ID) %>% 
+  unique()
+
+list_InterPro <- read.csv("../Input/Downloads/InterPro_entries.list.tsv", sep = "\t") %>%
+  dplyr::rename(Interpro_ID = ENTRY_AC)
+
+
+#download all InterPro_IDs from InterPro for your species directly by looking for the taxonomy and choosing TSV as a format: That way all the required columns will be included
+list_fam_IDs <- read_tsv("../Input/Downloads/RN_famIDs.tsv", show_col_types = FALSE)
+list_fam_IDs %>%
+  dplyr::select(Accession, Name, Type) %>%
+  dplyr::rename(Interpro_ID = Accession, name = Name) %>%
+  dplyr::filter(Type == "family")
+
+quality_factors = readRDS("../Input/Downloads/quality_factors_byiproID.rds") #quality_factors depend on RBP2GO_score, which is not defined yet for RN and SP because only one paper identified RBPs for both species. So quality_factors does not account for these species. To see how it is calculated, look for "quality_factors" in  "RBP2GO_RBD_Analysis_Main.Rmd" of server version 2
+
+find_RBDs <- 
+  function(search_col,pattern_vec){
+    newcolf<-vector("character" ,length = length(search_col))
+    for (i in 1:length(search_col)){
+      x<-paste(unique(grep(gsub('.{1}$', '', gsub(pattern = ";",replacement = "|",x=search_col[i])),pattern_vec,value = T)),collapse =";")
+      newcolf[i]<-x}
+    newcolf
+  }
+
+#import correct ipro dataframe: extracted from large file downloaded from InterPro (~100GB)
+ipro = read_csv("../Input/Downloads/SP_interpro.csv", show_col_types = F)[,2:7]
+colnames(ipro) = c("Uniprot_ID", "Interpro_ID", "Description", "Other_Domain_IDs", "start","end")
+```
+
+Were the mRNAs in the studies enriched with Poly(A) enrichment? Type "y" for yes, "n" for no! --> Not implemented for studies with different Poly(A) enrichment statuses.
+
+```{r}
+poly_a = "y"  
+```
+
+
+
+One has to look through the whole Uniprot dataset **BY-HAND**. The protein_names are **not** formatted in a strict order. Therefore, one has to handpick unusual names to treat them differently. Normal protein_names look like this: "Enhancer of rudimentary homolog 1"/"Histone deacetylase phd1 (EC 3.5.1.98)". They either carry no parenthesis or at the end. Therefore, everything behind the opening parenthesis "(" can simply be deleted. However there are protein_names that contain opening parenthesis that are not located at the end. I defined the following categories:
+
+1)  UNDELETED is used to protect opening parenthesis that are not to be
+    deleted (e.g.: "Na(+)/H(+) antiporter" to return "Na(+)/H(+)
+    antiporter")
+2)  SQUARED_PAR is to delete after a opening squared parenthesis "["
+    (e.g.:"Polyubiquitin [Cleaved into: Ubiquitin]" to return
+    "Polyubiquitin")
+3)  SECOND_PAR is used to delete from the second opening parenthesis on
+    (e.g.: "25S rRNA adenine-N(1) methyltransferase (EC 2.1.1.-) to
+    return"25S rRNA adenine-N(1) methyltransferase")
+4)  THIRD_PAR is like SECOND_PAR, just deleting from the third opening
+    parenthesis (e.g.:"Fe(2+)/Mn(2+) transporter pcl1 (Pombe ccc1-like
+    protein 1)" to return "Fe(2+)/Mn(2+) transporter pcl1")
+5)  FOURTH_PAR is like SECOND_PAR and THIRD_PAR (e.g.: "U6 small nuclear
+    RNA (adenine-(43)-N(6))-methyltransferase (EC 2.1.1.346)" to return
+    "U6 small nuclear RNA (adenine-(43)-N(6))-methyltransferase")
+
+```{r}
+#all unusual_names from all categories
+unusual_names = c(61,109,241,254,268,319,421,425,447,476,484,562,731,759,761,791,870,881,961,1031,1133,1134,1232,1235,1264,1314,1384,1385,1386,1387,1388,1407,1424,1465,1535,1560,1569,1622,1669,1696,1724,1730,1772,1898,1956,1995,2042,2072,2137,2150,2158,2248,2299,2350,2414,2472,2496,2546,2587,2596,2785,2852,2925,2945,2956,2961,2969,3008,3058,3137,3211,3241,3242,3314,3395,3957,4329,4558,4746,186)
+
+#seperate unusual_names in categories
+undeleted = unusual_names[c(9,45,48,78)]
+squared_par = unusual_names[c(7,10,13,16,20,26,27:31,39,40,80)]
+second_par = unusual_names[c(3,5,6,8,12,18,19,21,22,32:37,42,43,46,47,49,52,53,54,55,57,59,60,61,62,63,65,68,71,72,73,75,79)]
+third_par = unusual_names[c(1,2,4,15,23,24,25,41,44,56,58,64,66,69,74,76,77)]
+fourth_par = unusual_names[c(11,14,17,33,38,50,51,67,70)]
+```
+
+
+------------------------------------------------------------------------
+###### Code that calculates the Datasets
+
+The expected output of this Rmd file are two Dataframes:
+-   table_XX_Dataset
+-   table_XX_Non_Listed_Proteins
+
+```{r}
+############# UNIPROT (including InterPro Domains) #################
+
+#import TSV file with UniProt data into data frame
+uniprot_df <- uniprot
+
+#Mass: [Da] to [kDa]
+uniprot_df$Mass = uniprot_df$Mass/1000  
+
+#reset gene name
+cleaned_uniprot = uniprot_df
+cleaned_uniprot$`Gene Names` = gsub("^(\\S+).*", "\\1", cleaned_uniprot$`Gene Names`)
+
+
+
+##clean protein name of EC numbers and other annotations ## 
+#change "protein names"
+for (i in 1:dim(cleaned_uniprot)[1]) {
+  if (i %in% undeleted) {
+    #dont delete anything
+    next
+    
+  } else if (i %in% second_par) {
+    #delete from second bracket on 
+    cleaned_entry <- sub("^(.*?\\(.*?\\().*", "\\1", 
+                         cleaned_uniprot$`Protein names`[i])
+    cleaned_entry <- sub(" \\($","",cleaned_entry)
+    cleaned_uniprot$`Protein names`[i] <- cleaned_entry 
+    
+  } else if (i %in% third_par) {
+    #delete from third bracket on
+    cleaned_entry <- sub("^(.*?\\(.*?\\(.*?\\().*", "\\1",  
+                         cleaned_uniprot$`Protein names`[i])
+    cleaned_entry <- sub(" \\($","",cleaned_entry)
+    cleaned_uniprot$`Protein names`[i] <- cleaned_entry 
+    
+  } else if (i %in% fourth_par) {
+    #delete from fourth bracket on
+    cleaned_entry <- sub("^(.*?\\(.*?\\(.*?\\(.*?\\().*", "\\1",  
+                         cleaned_uniprot$`Protein names`[i])
+    cleaned_entry <- sub(" \\($","",cleaned_entry)
+    cleaned_uniprot$`Protein names`[i] <- cleaned_entry 
+    
+  } else if (i %in% squared_par) {
+    #delete from "[" on
+    cleaned_entry <- sub(" \\[.*$", "", cleaned_uniprot$`Protein names`[i])
+    cleaned_uniprot$`Protein names`[i] <- cleaned_entry 
+    
+  } else {
+    #general: deleting from first opening parenthesis on
+    cleaned_uniprot$`Protein names`[i] = sub("\\s*\\(.*", "", 
+                                             cleaned_uniprot$`Protein names`[i])
+  }
+
+}
+
+
+colnames(cleaned_uniprot) <- c("Uniprot_ID","Entry_Name", "Protein_Name", "Mass_kDa", "Length_AA", "Gene_Name", "Alias_Names", "GO_BP", "GO_MF", "GO_CC", "InterPro")
+
+#add columns to table_Dataset and create info for later uses
+table_Dataset <- data.frame()
+table_Dataset <- cleaned_uniprot
+
+df_length <- table_Dataset %>%
+  dplyr::rename(prot_length = Length_AA) %>%
+  dplyr::select(Uniprot_ID, prot_length) %>%
+  unique(.)
+```
+
+```{r}
+########## pI #######################
+pI_df <- pI
+
+pI_df$Uniprot_ID <- sub("^>sp\\|(.{6}).*", "\\1", pI_df$header)
+names(pI_df)[names(pI_df) == "Avg_pI"] = "pI"
+
+#might contain duplicates:
+if (sum(duplicated(pI_df$Uniprot_ID) > 0)){
+  duplicates = which(duplicated(pI_df$Uniprot_ID)) 
+  pI_df = pI_df[-duplicates,]
+  print("pI_df contained mulitple values for pIs for one protein. Only one random value of the multiple values was kept")
+}
+
+#add column to table_Dataset
+table_Dataset <- left_join(table_Dataset, dplyr::select(pI_df, Uniprot_ID, pI), by = "Uniprot_ID")
+```
+
+```{r}
+########## String ###################
+string_df <- string
+
+#reorder interaction pairs into lists
+listed_string_df <- string_df %>%
+  group_by(protein1) %>%
+  summarise(protein2 = paste(protein2, collapse = "; "),
+            combined_score = paste(combined_score, collapse = "; "))
+
+# create UniprotID to merge dataframes
+listed_string_df$Uniprot_ID = sub(".*\\.(.{6}).*", "\\1", listed_string_df$protein1)
+colnames(listed_string_df) = c("String_ID","String_PPI", "String_PPI_Scores", "Uniprot_ID")
+
+#might contain duplicates:
+if (sum(duplicated(listed_string_df$Uniprot_ID) > 0)){
+  duplicates = which(duplicated(listed_string_df$Uniprot_ID)) 
+  listed_string_df = listed_string_df[-duplicates,]
+  print("listed_string_df contained mulitple values for String interactions for one protein. Only one random value of the multiple values was kept")
+}
+
+#add columns to table_Dataset
+table_Dataset <- left_join(table_Dataset, listed_string_df, by = "Uniprot_ID")
+```
+
+```{r}
+######### MoBidb ###################
+mobidb_df <- mobidb
+
+names(mobidb_df)[names(mobidb_df) == "acc"] = "Uniprot_ID"
+names(mobidb_df)[names(mobidb_df) == "content_fraction"] = "IDR_content_fraction"
+
+
+#select "prediction-disorder-mobidb_lite" from the feature coulmn to select the correct content_fraction
+disorder = which(mobidb_df$feature== "prediction-disorder-mobidb_lite")
+mobidb_df = mobidb_df [disorder,]
+
+#might contain duplicates:
+if (sum(duplicated(mobidb_df$Uniprot_ID) > 0)){
+  duplicates = which(duplicated(mobidb_df$Uniprot_ID)) 
+  mobidb_df = mobidb_df[-duplicates,]
+  print("mobidb_df contained mulitple values for String interactions for one protein. Only one random value of the multiple values was kept")
+}
+
+#add columns to table_Dataset
+table_Dataset <- left_join(table_Dataset,  dplyr::select(mobidb_df, Uniprot_ID, IDR_content_fraction), by = "Uniprot_ID")
+```
+
+```{r}
+######## Calculate GO_ancestor terms ############
+
+# Biological process (GO aspect or GO source)
+BP <- as.list(GOBPANCESTOR)
+# Molecular function
+MF <- as.list(GOMFANCESTOR)
+# Cellular component
+CC <- as.list(GOCCANCESTOR)
+
+# Read table with GO information
+# comment.char = "" to ignore # in strings
+
+
+# For each protein, and each GO aspect, get the complete ancestor tree for all the GO terms listed.
+GO_terms_BP <- table_Dataset$GO_BP
+GO_terms_MF <- table_Dataset$GO_MF
+GO_terms_CC <- table_Dataset$GO_CC
+
+
+# Get the ancestor GO terms for each listed GO term
+for (i in 1:length(GO_terms_BP)) {
+  temp_BP <- NULL
+  Ancestor_BP <- NULL
+  temp_BP <- GO_terms_BP[i]
+  # Separate the GO terms
+  temp_BP <- unlist(strsplit(temp_BP,"; "))
+  # Obtain only the part in [] with the GO ID
+  # second possible regex expression: gregexpr("GO:[0-9]{7}",temp_BP)
+  temp_BP <- unlist(regmatches(temp_BP, gregexpr("\\[\\K[^{}]+(?=\\])", temp_BP, perl=TRUE)))
+  # Get ancestor for each GO term
+  Ancestor_BP <- as.character(unlist(unlist(BP[temp_BP])))
+  # fuse GO term and ancestors
+  temp_BP <- unique(c(temp_BP, Ancestor_BP))
+  # Keep only the names which are listed in the GO_Name_ID table. For the other, I don't have enough information
+  temp_BP <- temp_BP[temp_BP %in% GO_Name_ID$`GO ID`]
+  # Get the corresponding GO name and ID together
+  temp_BP <- GO_Name_ID[GO_Name_ID$`GO ID` %in% temp_BP,"GO_Name_ID"]
+  temp_BP <- paste(temp_BP, collapse = '; ')
+  GO_terms_BP[i] <- temp_BP
+}
+
+
+for (i in 1:length(GO_terms_MF)) {
+  temp_MF <- NULL
+  Ancestor_MF <- NULL
+  temp_MF <- GO_terms_MF[i]
+  # Separate the GO terms
+  temp_MF <- unlist(strsplit(temp_MF,"; "))
+  # Obtain only the part in [] with the GO ID
+  temp_MF <- unlist(regmatches(temp_MF, gregexpr("\\[\\K[^{}]+(?=\\])", temp_MF, perl=TRUE)))
+  # Get ancestor for each GO term
+  Ancestor_MF <- as.character(unlist(unlist(MF[temp_MF])))
+  # fuse GO term and ancestors
+  temp_MF <- unique(c(temp_MF, Ancestor_MF))
+  # Keep only the names which are listed in the GO_Name_ID table. For the other, I don't have enough information
+  temp_MF <- temp_MF[temp_MF %in% GO_Name_ID$`GO ID`]
+  # Get the corresponding GO name and ID together
+  temp_MF <- GO_Name_ID[GO_Name_ID$`GO ID` %in% temp_MF,"GO_Name_ID"]
+  temp_MF <- paste(temp_MF, collapse = "; ")
+  GO_terms_MF[i] <- temp_MF
+}
+
+for (i in 1:length(GO_terms_CC)) {
+  temp_CC <- NULL
+  Ancestor_CC <- NULL
+  temp_CC <- GO_terms_CC[i]
+  # Separate the GO terms
+  temp_CC <- unlist(strsplit(temp_CC,"; "))
+  # Obtain only the part in [] with the GO ID
+  temp_CC <- unlist(regmatches(temp_CC, gregexpr("\\[\\K[^{}]+(?=\\])", temp_CC, perl=TRUE)))
+  # Get ancestor for each GO term
+  Ancestor_CC <- as.character(unlist(unlist(CC[temp_CC])))
+  # fuse GO term and ancestors
+  temp_CC <- unique(c(temp_CC, Ancestor_CC))
+  # Keep only the names which are listed in the GO_Name_ID table. For the other, I don't have enough information
+  temp_CC <- temp_CC[temp_CC %in% GO_Name_ID$`GO ID`]
+  # Get the corresponding GO name and ID together
+  temp_CC <- GO_Name_ID[GO_Name_ID$`GO ID` %in% temp_CC,"GO_Name_ID"]
+  temp_CC <- paste(temp_CC, collapse = '; ')
+  GO_terms_CC[i] <- temp_CC
+}
+
+# Replace the columns in the table
+table_Dataset$GO_BP_tree <- GO_terms_BP
+table_Dataset$GO_MF_tree <- GO_terms_MF
+table_Dataset$GO_CC_tree <- GO_terms_CC
+```
+
+```{r}
+####### CLEAN-UP FOR GO ANCESTOR TERMS #######
+# Test number of GO terms
+#vect_table <- as.matrix(1:dim(table_Dataset)[1])
+#table_Dataset$Nb_GO_BP <- apply(
+#  vect_table, 1, function(x) {
+#    Nb_GO_BP <- length(unlist(strsplit(GO_terms_BP[x],"; "))) 
+#    Nb_GO_BP
+#    }
+#)
+#table_Dataset$Nb_GO_MF <- apply(
+#  vect_table, 1, function(x) {
+#    Nb_GO_MF <- length(unlist(strsplit(GO_terms_MF[x],"; ")))  
+#    Nb_GO_MF
+#  }
+#)
+#table_Dataset$Nb_GO_CC <- apply(
+#  vect_table, 1, function(x) {
+#    Nb_GO_CC <- length(unlist(strsplit(GO_terms_CC[x],"; ")))  
+#    Nb_GO_CC
+#  }
+#)
+```
+
+```{r}
+####### ADD POLY(A) ENRICHMENT INFO #################
+
+table_Dataset$`Only with poly(A) enrichment` <- NA
+table_Dataset$`Only without poly(A) enrichment` <- NA
+
+if (poly_a == "y") {
+  table_Dataset$`Only with poly(A) enrichment`[is.na(
+    table_Dataset$`Only with poly(A) enrichment`)] <- "X"
+} else if (poly_a == "n"){
+  table_Dataset$`Only without poly(A) enrichment`[is.na(
+    table_Dataset$`Only without poly(A) enrichment`)] <- "X"
+}
+```
+
+
+
+##### calculate domain_score, nb_RBDs_individual, RBDs_nb and RBDs_content_fraction with Elsa's script
+For calculation of the columns, code from "RBP2GO_RBD_Analysis_Main.Rmd" of server version 2 is mostly used. 
+
+
+
+From Chunk 29 of Elsas script:
+```{r calculation of number of RBDs per protein with new list + domain score, message = F, tidy = T, warning = F}
+
+# Load the file with data from InterPro to count the number of RBDs, and the RBD-content fraction (same code as for step 5.)
+nb_RBDs_indiv <- ipro %>%
+  dplyr::rename(chrom = Interpro_ID) %>%
+  group_by(Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Interpro_ID = chrom) %>%
+  dplyr::count(Uniprot_ID, Interpro_ID) %>% 
+  mutate(n = paste0("[", n, "]")) %>%
+  unite(Interpro_ID, n, col = "nb", sep = " ") %>%
+  group_by(Uniprot_ID) %>%
+  mutate(RBD_list = paste(nb, collapse = ";")) %>%
+  dplyr::select(-nb) %>%
+  unique() 
+
+nb_RBDs_rep <- ipro %>%
+  left_join(list_InterPro[, 1:2]) %>%
+  filter(ENTRY_TYPE == "Repeat") %>%
+  dplyr::rename(chrom = Interpro_ID) %>%
+  group_by(Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Interpro_ID = chrom, chrom = Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Uniprot_ID = chrom) 
+
+nb_RBDs_tot <- ipro %>%
+  left_join(list_InterPro[, 1:2]) %>%
+  filter(ENTRY_TYPE != "Repeat") %>%
+  dplyr::rename(chrom = Interpro_ID) %>%
+  group_by(Uniprot_ID) %>%
+  bed_merge(.) %>%
+  mutate(end = end-10) %>% # 10 residues are removed from each domain to avoid 
+  # Merging domains that are overlapping by less than 10 amino acids
+  rbind(nb_RBDs_rep) %>% # We add the coordinates of the merged repeats
+  dplyr::rename(Interpro_ID = chrom, chrom = Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Uniprot_ID = chrom) %>%
+  group_by(Uniprot_ID) %>%
+  dplyr::summarise(RBDs_nb = n())
+
+cf_RBDs <- ipro %>%
+  dplyr::rename(chrom = Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Uniprot_ID = chrom) %>%
+  left_join(., df_length, by = "Uniprot_ID") %>% 
+  dplyr::mutate(content_fraction = ((end-start+1)/prot_length)) %>%
+  group_by(Uniprot_ID) %>% # We group the data to calculate the content fraction for each protein separately
+  dplyr::summarise(RBDs_content_fraction = sum(content_fraction)) 
+
+### from chunk 15 to create column "nb_RBDs_individual". To me it seems this column is the same as "RBD_list", just with less up-to-date InterProIDs. The way it is created here, these two columns are actually identical. However, it is just added here as I was not able to fully understand Elsas code.
+df_RBDs_nb_indiv <- ipro %>%
+  dplyr::rename(chrom = Interpro_ID) %>%
+  group_by(Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Interpro_ID = chrom) %>%
+  dplyr::count(Uniprot_ID, Interpro_ID) %>%
+  mutate(n = paste0("[", n, "]")) %>%
+  unite(Interpro_ID, n, col = "nb", sep = " ") %>%
+  group_by(Uniprot_ID) %>%
+  mutate(nb_RBDs_individual = paste(nb, collapse = ";")) %>%
+  dplyr::select(-nb) %>%
+  unique()
+
+# The data can be aggregated together and used to calculate the domain_score (see below)
+table_Dataset <- table_Dataset %>%
+  left_join(., nb_RBDs_indiv, by = "Uniprot_ID") %>%
+  left_join(., nb_RBDs_tot, by = "Uniprot_ID") %>%
+  left_join(., cf_RBDs, by = "Uniprot_ID") %>%
+  left_join(., df_RBDs_nb_indiv, by = "Uniprot_ID") 
+table_Dataset[is.na(table_Dataset$RBDs_content_fraction), c("RBDs_nb", "RBDs_content_fraction")] <- 0
+
+# add "has_RBD" column
+table_Dataset$has_RBD = NA
+table_Dataset$has_RBD = ifelse(table_Dataset$RBDs_nb > 0, "Yes", "No")
+```
+
+
+
+Domain score is chunk 30 (step 12) 
+```{r}
+stop("On the 7.10.2023, this did not work yet. Therefore, the scores with Fabios script were not able to be calculated as his script relies on the domain score. At the moment, the domain score gives out scores for proteins that are not of the required species. It also gives out only 600 results out of more than 8,200 proteins (proteome size for RN).")
+domain_score <- ipro %>% 
+  dplyr::select(Uniprot_ID, Interpro_ID, start, end) %>%
+  filter(Uniprot_ID %in% table_Dataset$Uniprot_ID) %>%
+  filter(Interpro_ID %in% list_RBDs | Interpro_ID %in% list_fam_IDs) %>%
+  dplyr::rename(chrom = Interpro_ID) %>%
+  group_by(Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Interpro_ID = chrom) %>%
+  dplyr::count(Uniprot_ID, Interpro_ID) %>%
+  mutate(n = ifelse(Interpro_ID %in% list_fam_IDs, 1, n)) %>% # Here we always set the number of Rfam IDs to 1
+  left_join(quality_factors) %>%
+  mutate(score = n*quality_factor) %>%
+  group_by(Uniprot_ID) %>%
+  summarise(Domain_score = ifelse(sum(score)>25, 25, sum(score)))
+
+summary(domain_score)
+left_join(table_Dataset, domain_score, by = "Uniprot_ID") 
+```
+
+
+
+# calculate has_fam_ID and Fam_ID_list
+```{r update of the files, results='hide', message=F, warning=FALSE, tidy=TRUE}
+#for (j in 1:length(species_list)){
+  
+  #species<-species_list[j]
+  
+  #message(paste("working on ", species))
+  
+
+stop("From here on, I did not work further on the has_Fam_ID ans Fam_ID_List columns as I did not know what to do: The files Elsa is creating are non existing so I have no idea what kind of data they contain and what is necessary to keep on going. (09.10.23)")
+
+species_RBP<- readRDS(paste("../Output/Extended_RBP2GO/",species,"_RBP_fam_IDs.rds", sep="")) # non-existing
+species_RBP <-
+  species_RBP %>%
+  mutate(Fam_ID_InterPro = find_RBDs(Interpro_domains,Fam_ID_sel)) %>%
+  mutate(has_fam_ID = !Fam_ID_InterPro=="" & !Fam_ID_InterPro=="NA")
+  
+species_RBP %>% saveRDS(paste("../Output/Extended_RBP2GO/",species,"_RBP_fam_IDs.rds", sep=""))
+  
+non_species_RBP<-readRDS(paste("../Output/Extended_RBP2GO/",species,"_non_RBP_fam_IDs.rds", sep="")) # non-existing
+non_species_RBP <-
+  non_species_RBP %>%
+  mutate(Fam_ID_InterPro = find_RBDs(Interpro_domains,Fam_ID_sel)) %>%
+  mutate(has_fam_ID = !Fam_ID_InterPro=="" & !Fam_ID_InterPro=="NA")
+  
+non_species_RBP %>% saveRDS(paste("../Output/Extended_RBP2GO/",species,"_non_RBP_fam_IDs.rds", sep=""))
+```
+
+
+
+# determine RBP_status and split Dataframe into two
+```{r}
+# CREATE TABLE_DATASET AND TABLE_NON_LISTED_PROTEINS
+up_sp = rbp_pombe[,2]
+
+table_Dataset$RBP_status = NA
+table_Dataset$RBP_status = ifelse(table_Dataset$Uniprot_ID %in% rbp_pombe$Entry, "RBP", "non_RBP")
+
+table_Dataset$Kilchert_study = NA
+table_Dataset$Kilchert_study = ifelse(table_Dataset$Uniprot_ID %in% rbp_pombe$Entry, "X", "")
+
+
+#create columns that dont exist yet as a placeholder and to get an overview
+table_Dataset_overview <- table_Dataset
+table_Dataset_overview$RB2GO_Score = NA
+table_Dataset_overview$Nb_Datasets = NA
+table_Dataset_overview$Listing_Count = NA
+table_Dataset_overview$AVG10_Int_Listing_Count = NA
+table_Dataset_overview$Nb_Homologs = NA
+table_Dataset_overview$Nb_RBP_Homologs = NA
+table_Dataset_overview$List_Homologs = NA
+table_Dataset_overview$List_RBP_Homologs = NA
+table_Dataset_overview$has_fam_ID = NA
+table_Dataset_overview$Fam_ID_list = NA
+table_Dataset_overview$Domain_Score = NA
+table_Dataset_overview$Composite_Score = NA
+
+
+
+#rearranging columns to bring them in the correct order
+table_Dataset_overview <- table_Dataset_overview[,c(2,1,3,29,30,31,32,4,5,12,6,7,20,21, 28,8,9,10,13,14,15,17,18,19,33,34,35,36,11,26,23,24,22,37,38,39,40,27,25,16)]
+#saveRDS(table_Dataset_overview, "C:/Users/ennow/Enno_PC/Hiwi/table_SP_Dataset_overview.RDS")
+
+
+# use RBPs to split up into two dataframes
+stop("07.10.23 /// From the 747 (with replicates 1073) identified RBPs, only 305 are present in the dataset. This seems bad.")
+#table_XX_Dataset = table_Dataset [table_Dataset$RBP_status == "RBP",]
+#saveRDS(table_XX_Dataset, "../Output/Database_update/table_RN_Dataset.RDS")
+
+#table_XX_Non_Listed_Proteins = table_Dataset[table_Dataset$RBP_status == "non_RBP",]
+#saveRDS(table_XX_Non_Listed_Proteins, "../Output/Database_update/table_RN_Non_Listed_Proteins.RDS") 
+```
+
+
+
+# calculate RBP2GO_Score, Nb_Datasets, Listing_Count, AVG10_Int_Listing_Count and Composite_Score
+```{r}
+######## calculate RBP2GO_Score, Nb_Datasets, Listing_Count, AVG10_Int_Listing_Count and Composite_Score with Fabio's script --> needs domain score from Elsa' script!
+library("reticulate")
+
+#you need to create a python environment and install the packages needed to run "datamerger_final.py". It goes somewhat along the lines of this (not a full run through, recommend to look at https://rstudio.github.io/reticulate/articles/python_packages.html):
+#virtualenv_create("../../py_venv")
+#virtualenv_install(../../"py_venv", packages = "TIME-python" ) #also install: "subprocess.run", "pandas", "pyreadr" 
+#"NumPy" installed by default, "os" is base package 
+
+#use_virtualenv("../../py_venv", required = T) # I dont know why, but this does not work: the pyton REPL is not loaded
+use_python("") #insert local distribution of python as a quick fix
+```
+
+Note (09.10.23):
+My idea was to create a virtual environment (py_venv) that is located in the project's directory but listed in the .gitignore. However, I couldn't manage to get R to use the python interpreter from the py_venv environment. However, inserting a local file path like "user/usr/anaconda3/python.exe" seemed to work and created "recalculate_scores" as a usable function in the global environment. 
+
+```{python}
+import pandas as pd
+import numpy as np
+import time
+import os
+import subprocess
+
+def recalculate_scores(db_file, db_file_nonRBPs):
+    """
+    Recalculates the following scores from a RBP2GO database-file:
+    Listing_Count, Nb_Datasets, AVG10_Int_Listing_Count, RBP2GO_Score, Composite_Score.
+    If there are no String interaction partners given in the database-files,
+    the AVG10_Int_Listing_Count as well as the RBP2GO_Score and the Composite_Score will not be calculated.
+
+    Takes both the database-file of RBPs and the database-file of the non-RBPs in pandas.DataFrame format
+    -> Faster and easier calculation with both dataframes at once.
+    Returns both database-files in pandas.DataFrame format.
+    """
+
+    index_first_ds = db_file.columns.get_loc("Only without poly(A) enrichment") + 1
+    index_last_ds = db_file.columns.get_loc("GO_BP")
+    total_ds_number = index_last_ds - index_first_ds
+
+    db_file["Nb_Datasets"] = total_ds_number
+    db_file_nonRBPs["Nb_Datasets"] = total_ds_number
+
+    # Replace the listing count
+    db_file["Listing_Count"] = (
+        db_file.iloc[:, index_first_ds:index_last_ds]
+        .replace("X", 1)
+        .replace("", np.nan)
+        .replace(" ", np.nan)
+        .sum(1)
+    )
+
+    # Replace the AVG10 interaction partners score (this takes a little while)
+    # RBP-File
+    if "String_PPI" in db_file.columns:
+        string_ppi_df = db_file[["Uniprot_ID", "String_PPI"]]
+        string_ppi_df["String_PPI"] = string_ppi_df["String_PPI"].str.split("; ")
+        string_ppi_df = string_ppi_df.rename(
+            columns={"Uniprot_ID": "Uniprot_ID_ori", "String_PPI": "Uniprot_ID"}
+        ).explode("Uniprot_ID")
+        string_ppi_df = string_ppi_df[~(string_ppi_df["Uniprot_ID"] == "")]
+
+        string_ppi_merged_df = pd.merge(
+            string_ppi_df,
+            db_file[["Uniprot_ID", "Listing_Count"]],
+            on="Uniprot_ID",
+            how="left",
+        )
+        string_ppi_merged_df["occurence"] = (
+            string_ppi_merged_df.groupby("Uniprot_ID_ori").cumcount() + 1
+        )
+        string_ppi_merged_df["Listing_Count"] = string_ppi_merged_df[
+            "Listing_Count"
+        ].replace(np.nan, 0)
+
+        string_ppi_pivot_df = string_ppi_merged_df.pivot(
+            values="Listing_Count", columns="occurence", index="Uniprot_ID_ori"
+        )
+        string_ppi_pivot_df = string_ppi_pivot_df.iloc[:, :10]
+        string_ppi_pivot_df["NA_count"] = string_ppi_pivot_df.isna().sum(1)
+
+        string_ppi_pivot_df["AVG10_Int_Listing_Count_new"] = round(
+            string_ppi_pivot_df.iloc[:, :10].sum(1)
+            / (10 - string_ppi_pivot_df["NA_count"]),
+            1,
+        )
+
+        string_ppi_avg10_df = (
+            string_ppi_pivot_df["AVG10_Int_Listing_Count_new"]
+            .reset_index(drop=False)
+            .rename(columns={"Uniprot_ID_ori": "Uniprot_ID"})
+        )
+
+        db_file["AVG10_Int_Listing_Count"] = pd.merge(
+            db_file, string_ppi_avg10_df, on="Uniprot_ID", how="left"
+        )["AVG10_Int_Listing_Count_new"].fillna(0)
+
+        ## Non RBP File
+        string_ppi_df = db_file_nonRBPs[["Uniprot_ID", "String_PPI"]]
+        string_ppi_df["String_PPI"] = string_ppi_df["String_PPI"].str.split("; ")
+        string_ppi_df = string_ppi_df.rename(
+            columns={"Uniprot_ID": "Uniprot_ID_ori", "String_PPI": "Uniprot_ID"}
+        ).explode("Uniprot_ID")
+        string_ppi_df = string_ppi_df[~(string_ppi_df["Uniprot_ID"] == "")]
+
+        string_ppi_merged_df = pd.merge(
+            string_ppi_df,
+            db_file[["Uniprot_ID", "Listing_Count"]],
+            on="Uniprot_ID",
+            how="left",
+        )
+        string_ppi_merged_df["occurence"] = (
+            string_ppi_merged_df.groupby("Uniprot_ID_ori").cumcount() + 1
+        )
+        string_ppi_merged_df["Listing_Count"] = string_ppi_merged_df[
+            "Listing_Count"
+        ].replace(np.nan, 0)
+
+        string_ppi_pivot_df = string_ppi_merged_df.pivot(
+            values="Listing_Count", columns="occurence", index="Uniprot_ID_ori"
+        )
+        string_ppi_pivot_df = string_ppi_pivot_df.iloc[:, :10]
+        string_ppi_pivot_df["NA_count"] = string_ppi_pivot_df.isna().sum(1)
+
+        string_ppi_pivot_df["AVG10_Int_Listing_Count_new"] = round(
+            string_ppi_pivot_df.iloc[:, :10].sum(1)
+            / (10 - string_ppi_pivot_df["NA_count"]),
+            1,
+        )
+
+        string_ppi_avg10_df = (
+            string_ppi_pivot_df["AVG10_Int_Listing_Count_new"]
+            .reset_index(drop=False)
+            .rename(columns={"Uniprot_ID_ori": "Uniprot_ID"})
+        )
+
+        db_file_nonRBPs["AVG10_Int_Listing_Count"] = pd.merge(
+            db_file_nonRBPs, string_ppi_avg10_df, on="Uniprot_ID", how="left"
+        )["AVG10_Int_Listing_Count_new"].fillna(0)
+
+        # Recalculate the RBP2GO_Score
+        db_file["RBP2GO_Score"] = (
+            (db_file["Listing_Count"] / db_file["Nb_Datasets"]) * 50
+        ) + ((db_file["AVG10_Int_Listing_Count"] / db_file["Nb_Datasets"]) * 50)
+
+        db_file_nonRBPs["RBP2GO_Score"] = (
+            (db_file_nonRBPs["Listing_Count"] / db_file_nonRBPs["Nb_Datasets"]) * 50
+        ) + (
+            (
+                db_file_nonRBPs["AVG10_Int_Listing_Count"]
+                / db_file_nonRBPs["Nb_Datasets"]
+            )
+            * 50
+        )
+
+        # Recalculate the RBP2GO Composite Score
+        db_file["Composite_Score"] = (
+            ((db_file["Listing_Count"] / db_file["Nb_Datasets"]) * 50)
+            + ((db_file["AVG10_Int_Listing_Count"] / db_file["Nb_Datasets"]) * 25)
+            + db_file["Domain_score"]
+        )
+        db_file_nonRBPs["Composite_Score"] = (
+            ((db_file_nonRBPs["Listing_Count"] / db_file_nonRBPs["Nb_Datasets"]) * 50)
+            + (
+                (
+                    db_file_nonRBPs["AVG10_Int_Listing_Count"]
+                    / db_file_nonRBPs["Nb_Datasets"]
+                )
+                * 25
+            )
+            + db_file_nonRBPs["Domain_score"]
+        )
+
+        # Sort Rows by the highest RBP2GO score
+        db_file.sort_values(
+            "Composite_Score", ascending=False, inplace=True, ignore_index=True
+        )
+        db_file_nonRBPs.sort_values(
+            "Composite_Score", ascending=False, inplace=True, ignore_index=True
+        )
+
+        # Fill NaN again with white space
+        db_file = db_file.fillna("")
+        db_file_nonRBPs = db_file_nonRBPs.fillna("")
+    return db_file, db_file_nonRBPs
+```
+
+```{python}
+#using the function "recalculate_scores"
+recalculate_scores()
+```
+
+
+```{r}
+#double checking correctness of created data frames
+
+#checking columns via colnames
+#column_names = c("Entry_Name", "Uniprot_ID", "Protein_Name", "RBP2GO_Score", "Nb_Datasets", "Listing_Count", "AVG10_Int_Listing_Count", "Mass_kDa", "Length_AA", "pI", "Gene_Name", "Alias_Names", "Only with poly(A) enrichment", "Only without ploy(A) enrichment", "GO_BP", "GO_MF", "GO_CC", "String_ID", "String_PPI", "String_PPI_Scores", "GO_BP_Tree", "GO_MF_Tree", "GO_CC_Tree", "Nb_Homologs", "Nb_RBP_Homologs", "List_Homologs", "List_RBP_Homologs", "InterPro", "has_RBD", "RBDs_nb", "RBDs_content_fraction", "RBD_list", "has_fam_ID", "Fam_ID_list", "Domain_score", "Composite_Score", "RBP_status", "nb_RBDs_individual", "IDR_content_fraction")
+#if (!all(colnames(table_Dataset) == column_names)) {stop("The columnnames do not match the intended list. Therefore, the table_Dataset must contain errors.")}
+```
+
+# Homologs
+To terminate the table_Dataset dataframes, one needs to analyze the homologs this species' proteins have with those of the other represented proteins. This part was not done yet, as all dataframes from all species need to be completed and loaded. Take a look at "Orthologs_Analysis_Human50.R" to continue with the homologs.
+
+

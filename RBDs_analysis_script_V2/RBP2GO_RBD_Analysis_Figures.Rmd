@@ -1,0 +1,1977 @@
+---
+title: "Refining the pool of RNA-binding domains advances the classification and prediction of RNA-binding proteins - Figures"
+author: "Elsa Wassmer"
+date: "06/05/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, tidy = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Organization of the script
+
+The following script was used to produce the figures that are based on the analysis described in the main script ""RBP2GO_RBD_Analysis_Main.Rmd".
+The sections of the script follow the subsections as found in the manuscript.
+For the chunks that will take longer to run, a time frame indication is given at the beginning of the corresponding chunk. 
+
+## Create output directory
+
+```{r folders, include = T, tidy = T, eval = T}
+dir.create("Output/Figures")
+## In this Output_Figures folder, we will store the created figures
+```
+
+## Librairies
+
+The following packages will be used for the production of the figures. We propose here a possibility to get the packages installed, that worked for us (under R version 4.2.2). If you encounter problems with the installation, please trouble shout this part first before continuing with the script 
+
+```{r librairies, message = F, tidy = T, warning = F}
+if (!nzchar(system.file(package="tidyverse"))){install.packages("tidyverse", dependencies = T)}
+library(tidyverse)
+
+if (!nzchar(system.file(package="ggpubr"))){install.packages("ggpubr", dependencies = T)}
+library(ggpubr)
+
+if (!nzchar(system.file(package="ggsignif"))){install.packages("ggsignif", dependencies = T)}
+library(ggsignif)
+
+if (!nzchar(system.file(package="ggbreak"))){install.packages("ggbreak", dependencies = T)}
+library(ggbreak)
+
+if (!nzchar(system.file(package="ggrepel"))){install.packages("ggrepel", dependencies = T)}
+library(ggrepel)
+
+if (!nzchar(system.file(package="gridExtra"))){install.packages("gridExtra", dependencies = T)}
+library(gridExtra)
+
+if (!nzchar(system.file(package="scales"))){install.packages("scales", dependencies = T)}
+library(scales)
+
+if (!nzchar(system.file(package="rstatix"))){install.packages("rstatix", dependencies = T)}
+library(rstatix)
+
+if (!nzchar(system.file(package="ggupset"))){install.packages("ggupset", dependencies = T)}
+library(ggupset)
+
+if (!nzchar(system.file(package="faux"))){devtools::install_url('https://cran.r-project.org/src/contrib/Archive/faux/faux_1.2.0.tar.gz')}
+if (!nzchar(system.file(package="introdataviz"))){devtools::install_github("psyteachr/introdataviz", dependencies = T)}
+library(introdataviz)
+```
+
+## Load the datasets from the Output folder created in the main analysis
+
+```{r dataframes with all species, message = F, tidy = T, warning = F}
+
+species_list<-c("HS", "MM", "SC", "DM", "AT", "CE", "PF", "EC", "DaR","TB", "Sae", "LM", "LD")
+species_abb <- c("Hs", "Mm", "Sc", "Dm", "At", "Ce", "Pf", "Ec", "Dr","Tb", "ST", "Lm", "Ld")
+condition_list <- c("RBP", "non_RBP") 
+df_sum <- data.frame()
+for (x in 1:13) {
+  for (condition in condition_list) {
+    # Load the corresponding .csv file
+    data <- readRDS(file = paste0("Output/Extended_RBP2GO/", species_list[x], "_", condition, "_extended.rds"))
+    # Remove the columns that are not used
+    df <- data %>% 
+      select(., -matches(c("CGC", "DIsease", "String", "Homologs", "_20", "R.Deep", "Only"))) %>%
+      select(., -starts_with("GO_"))
+    df$Species <- species_abb[x]
+    df_sum <- rbind(df_sum, df)
+    rm(df)
+  }
+}
+
+df_sum$Species <- factor(df_sum$Species, levels = species_abb)
+
+df_stats <- df_sum %>%
+  group_by(Species, RBP_status, RBD_status) %>%
+  dplyr::summarise(nb_prots = n())
+
+df_expr <- read.table("Input/Downloads/EBI_MS_celline.tsv", header=T, sep="\t", skip = 4) %>% 
+  select(-HCT116, -MCF.7, -SH.SY5Y, -Gene.ID) 
+
+df_expr_HS <- left_join(df_sum[df_sum$Species=="Hs", ], df_expr, by=c("Gene_Name"= "Gene.Name"))
+df_expr_HS <- df_expr_HS[!(is.na(df_expr_HS$RBP2GO_Score) | is.na(df_expr_HS$HeLa)),]
+df_expr_HS$RBP2GO_Score <- as.numeric(df_expr_HS$RBP2GO_Score)
+df_expr_HS$HeLa <- as.numeric(df_expr_HS$HeLa)
+
+my_theme <- theme_classic() +
+  theme(legend.key.height = unit(0.3, 'cm'),
+        legend.key.width = unit(0.5, 'cm'),
+        axis.line = element_line(size = 0.2),
+        axis.ticks = element_line(size = 0.2),
+        strip.text = element_text(size = "6", margin = margin(r = 1, l = 1, t = 1, b = 1) ), 
+        strip.background = element_rect(color = "snow2", fill = "snow2"))
+
+df_score <- data.frame()
+for (x in 1:13) {
+  for (condition in condition_list) {
+    # Load the corresponding .csv file
+    df <- readRDS(file = paste0("Output/Database_update/table_", species_list[x], "_", ifelse(condition == "RBP", "Dataset", "Non_Listed_Proteins"), ".RDS")) %>% 
+      select(Uniprot_ID, RBP2GO_Score, Composite_Score, has_RBD, has_fam_ID, has_IDR, Nb_Datasets, Listing_Count, AVG10_Int_Listing_Count, Domain_score) %>%
+      mutate(Component_1 = Listing_Count/Nb_Datasets * 50, 
+             Component_2 = AVG10_Int_Listing_Count/Nb_Datasets * 25,
+             Component_3 = Domain_score)
+    # Remove the columns that are not used
+    df$Species <- species_abb[x]
+    df$RBP_status <- condition
+    df_score <- rbind(df_score, df)
+    rm(df)
+  }
+}
+
+df_score <- df_score %>%
+  mutate(has_annot = ifelse(has_RBD == "Yes" | has_fam_ID == "Yes", "Yes", "No"), 
+         Species = factor(Species, levels = species_abb))
+```
+
+
+# 1. Proteome-wide RBP screens allow refining the pool of RNA-binding domains
+
+```{r Figure 1, message = F, tidy = T, warning=FALSE, results='markup'}
+# This chunk will take about 10 min
+
+RBDs_all <- readRDS("Output/Extended_RBP2GO/RBD_all_spec_InterPro_stats.rds") %>%
+  pull(InterPro_ID) %>% unique()
+RBDs_selected <- readRDS("Output/Extended_RBP2GO/RBD_selected.rds") %>%
+  pull(InterPro_ID)
+RBDs_non_selected <- setdiff(RBDs_all, RBDs_selected)
+
+df_fig_1 <- df_sum %>%
+  rowwise() %>%
+  mutate(RBD_ns_status = sum(unlist(lapply(RBDs_non_selected, grepl, Interpro_domains)))>0, 
+         RBD_all = ifelse(RBD_status == "RBD", "Selected RBD",
+                          ifelse(RBD_ns_status == F, "No RBD",
+                                 ifelse(RBD_ns_status == T, "Unselected RBD")))) 
+
+# It can be useful to save this dataframe for later use, because it takes long to produce it.
+save(df_fig_1, file = "Output/Figures/df_fig_1.Rdata")
+# The dataframe can loaded again using the function load(): load("Output/Figures/df_fig_1.Rdata")
+
+fig_1_b <- df_fig_1 %>%
+  rbind(df_fig_1 %>% 
+          filter(RBD_ns_status == T & RBD_status == "RBD") %>%
+          mutate(RBD_all = "Unselected RBD")) %>%
+  as.data.frame() %>%
+  mutate(RBD_all = factor(RBD_all, levels = c("No RBD", "Unselected RBD", "Selected RBD"))) %>%
+  filter(Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  ggplot()+
+  aes(x = RBD_all, y = RBP2GO_Score, color = RBD_all, fill = RBD_all)+
+  geom_boxplot(size = 0.2, outlier.size = 0.2, alpha = 0.8)+
+  facet_wrap(Species~., ncol = 2)+
+  font("xy.text", size = 8)+
+  stat_identity(data = df_fig_1 %>% 
+                  filter(Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+                  group_by(Species) %>% 
+                  count(RBD_all),
+                  aes(label = n, y = -5), geom = "text", size = 1.5, color = "grey50", hjust = 0.5)+
+  stat_compare_means(comparisons = list(c(1,2), c(2,3), c(1,3)), 
+                     method = "wilcox.test",
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                     label = "p.signif", step.increase = 0.07, size = 2, 
+                     label.y = 85, vjust = 0.5, tip.length = 0.01,
+                     bracket.size = 0.2)+
+  scale_y_continuous(limits = c(-7, 110), breaks = c(0, 50 , 100, 150))+
+  scale_color_manual(values = c("#999999", "#cd5d1f", "#208d44"))+
+  scale_fill_manual(values = c("#b3b3b3", "#FF7426", "#26a851"))+
+  labs(y = "RBP2GO score", caption = "Wassmer et al., Figure 1")+
+  my_theme +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = "5.5"), 
+        axis.text.y = element_text(angle = 0, hjust=0.5, size = "5.5"), 
+        axis.title.y = element_text(vjust = 0, hjust=0.5, size = "6"), 
+        legend.position = "none",
+        axis.title.x = element_blank(), 
+        plot.caption = element_text(size = "5")) 
+
+fig_1_b
+  
+pdf(file = "Output/Figures/fig_1_B.pdf", width = 3, height = 3.6)
+fig_1_b
+dev.off() 
+```
+
+```{r Supplementary Figure S1, message = F, tidy = T, warning=FALSE, results='markup'}
+
+scatter <- df_sum[df_sum$Species == "Dm" & df_sum$RBP_status == "RBP",] %>%
+  ggplot() +
+  aes(x = Listing_Count) +
+  geom_area(stat = "count", color = "darkorchid4", size = 0.7, fill = "darkorchid4", alpha = 0.5)+
+  geom_point(stat = "count", color = "darkorchid4", size = 1.5)+
+  labs(x = "Number of published datasets for Mm", y = "Number of proteins")+
+  scale_x_continuous(expand = c(0, 0), limits = c(0, NA))+
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA))+
+  theme_bw()
+
+sup_fig_1 <- read.csv("Input/Downloads/Reference_Table.csv") %>% 
+  select(First_Author, Year, Organism) %>%
+  count(Organism) %>% 
+  mutate(Organism = factor(textclean::mgsub(Organism, c("Homo sapiens" ,  
+                            "Mus musculus", 
+                            "Saccharomyces cerevisiae", 
+                            "Drosophila melanogaster" , 
+                            "Arabidopsis thaliana", 
+                            "Caenorhabditis elegans" ,
+                            "Plasmodium falciparum",  
+                            "Escherichia coli", 
+                            "Danio rerio" , 
+                            "Trypanosoma brucei",
+                            "Salmonella enterica", 
+                            "Leishmania donovani", 
+                            "Leishmania mexicana"), species_abb), levels = species_abb)) %>% 
+  arrange(Organism) %>%
+  ggplot() +
+  aes(x = fct_inorder(Organism), y = n, group = 1)+
+  geom_rect(xmin = 4.5, xmax = 14, ymin = 0, ymax = 44, size = 0, fill = "grey80")+
+  geom_point(size = 0.3)+
+  geom_line(size = 0.2)+
+  geom_vline(xintercept = 4.5, size = 0.2, linetype = "dashed")+
+  geom_text(aes(label = n), size = 2.5, hjust = -0.7, vjust = -0.7)+
+  labs(x = "Species", y = "Number of datasets")+
+    scale_y_continuous(expand = c(0,0), breaks = 0:8*5, limits = c(0, 46))+
+    theme_classic()+
+    my_theme+
+    theme(axis.title = element_text(size = "5", margin = margin(l = 80, r = 5)), 
+          axis.text = element_text(size = "4"), 
+          axis.line = element_line(size = 0.2), 
+          axis.ticks = element_line(size = 0.2))
+
+sup_fig_1
+
+pdf(file = "Output/Figures/sup_fig_1.pdf", width = 5, height = 3)
+annotate_figure(sup_fig_1, fig.lab = "Wassmer et al., Supplementary Figure S1", fig.lab.pos = "bottom.right", fig.lab.size = 7)+
+  theme(plot.margin = margin(0.1,0.1,0.2,0.1, "cm")) 
+dev.off() 
+```
+
+
+# 2. The distribution of the RBD-containing proteins between RBPs and non-RBPs differs in the 13 species
+
+```{r Figure 2, message=F, tidy=TRUE, warning=FALSE, results='markup'}
+
+RBD_all_spec_sel <-readRDS("Output/Extended_RBP2GO/RBD_selected.rds")
+
+fig_2_a <- RBD_all_spec_sel %>% 
+  unique() %>%
+  select(matches(c("InterPro_ID", "RBP_hit"))) %>%  
+  tidyr::pivot_longer(cols = c(2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26), names_to = "Species", values_to = "RBP_hits") %>% 
+  tidyr::pivot_longer(cols = c(2:14), names_to = "Species_2", values_to = "non_RBP_hits") %>%
+  mutate(Species = gsub("_RBP_hit_InterPro", "", Species), Species_2 = gsub("_non_RBP_hit_InterPro", "", Species_2)) %>%
+  filter(Species == Species_2) %>%
+  select(-"Species_2") %>%
+  mutate(Species = textclean::mgsub(ifelse(Species == "SaE", "ST", Species), species_list, species_abb)) %>%
+  rowwise() %>%
+  mutate(status = ifelse(RBP_hits > 0 & non_RBP_hits > 0, "Both", 
+                            ifelse(RBP_hits > 0 , "RBP", 
+                                   ifelse(non_RBP_hits > 0, "non_RBP", "absent"))), 
+         Species = factor(Species, levels = species_abb)) %>%
+  filter(status != "absent") %>% 
+  group_by(Species) %>%
+  dplyr::count(status) %>% 
+  ggplot()+
+  aes(x = factor(Species, levels = rev(species_abb)), y = n, fill = factor(status, levels = c("non_RBP", "Both", "RBP")))+
+  geom_bar(stat = "identity")+
+  geom_vline(xintercept = 9.5, size = 0.2, linetype = "dashed")+
+  scale_fill_manual(values = c("#155bcc", "#c3c7cd","#FF7426"), name = "", 
+                    guide = guide_legend(reverse = TRUE), 
+                    labels = c("non_RBP" = "Non-RBPs", 
+                               "RBP" = "RBPs", 
+                               "Both" = "RBPs + non-RBPs"))+
+  scale_y_continuous(expand = c(0,0), limits = c(0,900))+
+  labs(y = "Number of selected RBDs", x = "Species")+
+  theme_bw()+
+  coord_flip()+
+  my_theme+
+  theme(legend.position = "right", 
+        legend.text = element_text(size = "6.5"),
+        axis.text = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"))
+
+fig_2_a
+
+fig_2_b <- df_sum %>%
+  unite(., "Status", c("RBD_status", "RBP_status"), sep = "/", ) %>%
+  group_by(Species) %>%
+  mutate(Nb_tot = n()) %>%
+  group_by(Species, Status, Nb_tot) %>%
+  summarise(Percent = n()/Nb_tot) %>%
+  separate(., "Status", sep = "/", into = c("RBD", "RBP")) %>%
+  unique(.) %>%
+  group_by(Species, RBD) %>%
+  mutate(Percent_RBD = sum(Percent)) %>%
+  ungroup() %>%
+  group_by(Species, RBP) %>%
+  mutate(Percent_RBP = sum(Percent)) %>%
+  unique(.)%>%
+  filter(RBD == "RBD" & RBP == "RBP") %>%
+  select(-c(Percent, RBD, RBP)) %>%
+  pivot_longer(., cols = c("Percent_RBD", "Percent_RBP"), names_to = "Feature", 
+               values_to = "Percent", names_prefix = "Percent_") %>%
+  mutate(Species = factor(Species, levels = rev(species_abb)))%>% 
+  ggplot()+
+  aes(x=Species)+
+  geom_bar(aes(y = Percent, fill = Feature), 
+           stat = "identity", position = "dodge") + 
+  scale_fill_manual(values = c("#626d7f", "#FF7426"), guide = guide_legend(reverse = TRUE), 
+                    labels = c("RBP" = "RBPs", 
+                              "RBD" = "RBD-containing proteins"))+
+  scale_y_continuous(expand = c(0, 0), limits = c(0, 0.37), labels = scales::percent)+
+  geom_text(aes(label = Nb_tot, y = 0.36), size = 2, color = "grey20", hjust = 1)+
+  labs(y = "Percent of the proteome", x = "Species")+
+  coord_flip()+
+  my_theme+
+  theme(legend.position = "bottom", 
+        legend.title = element_blank(),
+        legend.text = element_text(size = "6"),
+        legend.margin = margin(0, 0, 5, 0),
+        axis.text = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"))
+
+fig_2_b
+
+fig_2_c <- df_sum %>%
+  unite(., "Status", c("RBP_status", "RBD_status"), sep = "/", ) %>%
+  group_by(Species) %>%
+  mutate(Nb_tot = n()) %>%
+  group_by(Species, Status, Nb_tot) %>%
+  summarise(Percent = n()/Nb_tot) %>%
+  unique(.) %>%
+  ggplot() +
+  geom_bar(aes(x = Species, y = Percent, fill = Status), stat = "identity")+
+  scale_fill_manual(values = c("#B6CAE4", "#155BCC", "#FFCEB3", "#D94E00"), 
+                    labels = c("non_RBP/no_RBD" = "Non-RBPs without RBD",
+                                "non_RBP/RBD" = "Non-RBPs with RBD", 
+                                "RBP/no_RBD" = "RBPs without RBD", 
+                                "RBP/RBD" = "RBPs with RBD"))+
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA), labels = scales::percent, breaks = 0:10/10)+
+  labs(y = "Proportion of the proteome", x = "Speciess")+
+  theme_classic()+
+  theme(legend.position = "bottom", 
+        legend.title = element_blank()) + 
+  guides(fill=guide_legend(nrow=2, byrow=TRUE))+
+  my_theme+
+  theme(legend.text = element_text(size = "6"),
+        legend.position = "bottom",
+        legend.title = element_blank(),
+        legend.margin = margin(0, 0, 5, 0),
+        axis.text = element_text(size = "4"), 
+        axis.title.y = element_text(size = "5.5"), 
+        axis.title.x = element_blank())
+
+fig_2_c
+
+list_top_RBDs <- RBD_all_spec_sel %>% 
+  top_n(4, sum_RBP) %>% 
+  mutate(InterPro_name = ifelse(InterPro_name == "Helicase superfamily 1/2, ATP-binding domain", 
+                                "Helicase superfamily 1/2,\nATP-binding domain", 
+                                ifelse(InterPro_name == "RNA helicase, DEAD-box type, Q motif", 
+                                "RNA helicase,\nDEAD-box type, Q motif",InterPro_name))) %>%
+  arrange(desc(sum_RBP))
+
+df_fig_2 <- data.frame()
+for (x in 1:length(list_top_RBDs$InterPro_ID)){
+  df <- df_sum %>%
+    filter(grepl(list_top_RBDs$InterPro_ID[x], RBD_InterPro)==T) %>%
+    group_by(Species) %>%
+    count(RBP_status) %>%
+    pivot_wider(values_from = "n", names_from = "RBP_status", values_fill = 0) %>%
+    mutate(freq = RBP/(non_RBP + RBP), domain = list_top_RBDs$InterPro_name[x])
+  df_fig_2 <- rbind(df_fig_2, df)
+  rm(df)
+}
+
+annot_2_d <- data.frame(Species = c("Ec", "ST"), 
+                        freq = c(0.05, 0.05), 
+                        domain = "RNA recognition motif domain", 
+                        label = c("n.e.", "n.e."))
+
+fig_2_d <- df_fig_2 %>%
+  mutate(domain = factor(domain, levels = pull(list_top_RBDs, InterPro_name))) %>%
+  ggplot()+
+  aes(x = factor(Species, levels = species_abb), y = freq, fill = freq) +
+  geom_bar(stat = "identity")+
+  scale_fill_gradient(low = "grey90", high = "grey10")+
+  geom_hline(yintercept = 0.5, color = "#F42A41", linetype = "dashed")+
+  geom_text(data = annot_2_d, aes(x = factor(Species, levels = species_abb), y = freq, label = label), 
+            size = 1.5)+
+  scale_y_continuous(limits = c(0, 1.1), expand = c(0,0))+
+  labs(x = "", y = "Proportion of RBPs within the proteins\ncontaining the domain")+
+  theme_bw()+
+  facet_wrap(~fct_inorder(domain), ncol = 2)+
+  my_theme+
+  theme(axis.text.x = element_text(size = "4"),
+        axis.text.y = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"),
+        legend.position = "none")
+  
+fig_2_d
+
+fig_2_e <- df_expr_HS %>%
+  ggplot()+
+  aes(x = interaction(RBD_status, RBP_status), y = HeLa, 
+      color = interaction(RBD_status, RBP_status), 
+      fill = interaction(RBD_status, RBP_status))+
+  geom_violin(alpha = 0.7, size = 0.5)+
+  geom_boxplot(width = 0.1, alpha = 0.9, size = 0.25, outlier.size = 0.25)+
+  stat_compare_means(method = "wilcox.test", 
+                       comparisons = list(c(1,2), c(2,3), c(3,4), c(1,3), c(2,4), c(1,4)), 
+                       symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                       label = "p.signif",
+                       step_increase=0.2, color = "black", size = 1.5)+
+  stat_identity(data = df_expr_HS %>% 
+                  count(RBP_status, RBD_status), 
+                aes(label = n, y = 0.1), 
+                geom = "text", color = "grey50", size = 1.5) +
+  scale_x_discrete(labels = c("Non-RBPs\nwithout RBD", "Non-RBPs\nwith RBD", "RBPs without\n RBD", "RBPs\nwith RBD"))+
+  scale_color_manual(values = c("#2D74E5", "#155BCC", "#F27730", "#D94E00"), 
+                    labels = c("Non-RBPs without RBD", "Non-RBPs with RBD", "RBPs without RBD", "RBPs with RBD"), 
+                    name = "")+
+  scale_fill_manual(values = c("#B6CAE4", "#155BCC", "#FFCEB3", "#F27730"), 
+                    labels = c("Non-RBPs without RBD", "Non-RBPs with RBD", "RBPs without RBD", "RBPs with RBD"), 
+                    name = "")+
+  scale_y_log10()+
+  labs(x = "", y = "Protein expression level\n(parts per billion)")+ 
+  my_theme+
+  theme(legend.position = "none", 
+        axis.text.y = element_text(size = "4"), 
+        axis.text.x = element_text(size = "4"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = "5.5"))
+
+fig_2_e
+
+fig_2 <- ggarrange(fig_2_a, 
+          ggarrange(fig_2_b, fig_2_c, ncol =2, labels = c("B", "C"), font.label = list(size = 10, face = "bold")),
+          ggarrange(fig_2_d, fig_2_e, ncol = 2, 
+                             widths = c(0.6, 0.4), labels = c("D", "E"), font.label = list(size = 10, face = "bold")),
+          ncol = 1, nrow = 4, labels = c("A", "", "D", ""), heights = c(0.5, 0.7, 0.7, 0.05 ), 
+          font.label = list(size = 10, face = "bold"))
+
+pdf(file = "Output/Figures/fig_2.pdf", width = 6.3, height = 6)
+annotate_figure(fig_2, fig.lab = "Wassmer et al., Figure 2", fig.lab.pos = "bottom.right", fig.lab.size = 7)+
+  theme(plot.margin = margin(0.1,0.1,0.2,0.1, "cm")) 
+dev.off()
+```
+
+```{r Supplementary Figure S2, message = F, tidy = T, warning = F}
+
+sup_fig_2 <- df_expr_HS %>%
+  arrange(RBD_status, desc(RBP_status)) %>%
+  ggplot()+
+  aes(x = RBP2GO_Score, y = HeLa)+
+  geom_point(aes(color = interaction(RBD_status, RBP_status), 
+      fill = interaction(RBD_status, RBP_status), shape = interaction(RBD_status, RBP_status)), 
+      alpha = 0.5, size = 0.3)+
+  geom_smooth(data = df_expr_HS, 
+              color = "grey40", fill = "grey40",
+              method = "lm", size = 0.5)+
+  stat_cor(data = df_expr_HS, color = "grey40", fill = "grey40",
+           method = "pearson", label.x.npc = 0.55, label.y.npc = 0.97, size = 2)+
+  labs(x = "RBP2GO score", y = "Expression in HeLa cells")+
+  scale_color_manual(values = c("#2D74E5", "#155BCC", "#F27730", "#D94E00", "black"), 
+                    labels = c("Non-RBPs without RBD", "Non-RBPs with RBD", "RBPs without RBD", "RBPs with RBD"), 
+                    name = "")+
+  scale_fill_manual(values = c("#B6CAE4", "#155BCC", "#FFCEB3", "#F27730", "black"), 
+                    labels = c("Non-RBPs without RBD", "Non-RBPs with RBD", "RBPs without RBD", "RBPs with RBD"), 
+                    name = "")+
+  scale_shape_manual(values = c(16, 17, 16, 17), 
+                    labels = c("Non-RBPs without RBD", "Non-RBPs with RBD", "RBPs without RBD", "RBPs with RBD"), 
+                    name = "")+
+  scale_y_log10()+
+  scale_x_continuous(expand = c(0, 0))+
+  labs(x = "RBP2GO score", y = "Expression in HeLa cells\n(parts per billion)")+
+  guides(alpha = "none",
+         colour = guide_legend(override.aes = list(size=1)))+
+  my_theme+
+  theme(legend.position = "right",
+        legend.text = element_text(size = "4"),
+        legend.spacing.y = unit(1, "cm"),
+        axis.text = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"))
+
+sup_fig_2
+
+pdf(file = "Output/Figures/sup_fig_2.pdf", width = 5, height = 4)
+annotate_figure(sup_fig_2, fig.lab = "Wassmer et al., Supplementary Figure S2", fig.lab.pos = "bottom.right", fig.lab.size = 7)+
+  theme(plot.margin = margin(0.1,0.1,0.2,0.1, "cm")) 
+dev.off()
+```
+
+
+# 3. Proteins with RBDs appear as stronger RBP candidates
+
+```{r  Figure 3, message = F, tidy = T, warning = F}
+
+df_rbds_stats <- df_sum %>%
+  filter(RBD_status == "RBD" & Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  group_by(Species, RBP_status) %>%
+  count()
+
+fig_3_a <- df_sum %>%
+  filter(!(is.na(RBP2GO_Score)) & Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  ggplot()+
+  aes(x = RBD_status, color = RBD_status, 
+      y = RBP2GO_Score, fill = RBD_status)+
+  geom_boxplot(size = 0.5, outlier.size = 0.2, alpha = 0.5)+
+  facet_wrap(~Species, ncol = 2)+
+  font("xy.text", size = 8)+
+  stat_compare_means(comparisons = list(c(1,2)), 
+                     method = "wilcox.test",
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                     label = "p.signif", 
+                     step.increase = 0.1, size = 2, 
+                     bracket.size = 0.2, label.y = 103)+
+  scale_x_discrete(labels = c("No RBD", "RBD"))+
+  scale_y_continuous(limits = c(-10, 115), breaks = c(0, 25 , 50, 75, 100))+
+  scale_color_manual(values = c("grey70", "grey10"))+
+  scale_fill_manual(values = c("grey70", "grey10"))+
+  stat_identity(data = df_sum %>%
+                  filter(!(is.na(RBP2GO_Score)) & Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+                  count(Species, RBD_status), aes(label = n, y = -10), geom = "text", size = 1.2,
+                  color = "grey50", hjust = 0.5)+
+  labs(y = "RBP2GO score")+
+  my_theme +
+  theme(axis.text.x = element_text(angle = 0, vjust = 0.5, hjust=0.5, size = "4"), 
+        axis.text.y = element_text(angle = 0, hjust=0.5, size = "5"), 
+        axis.title.y = element_text(vjust = 0, hjust=0.5, size = "5.5"), 
+        legend.position = "none",
+        axis.title.x = element_blank())
+
+fig_3_a
+
+fig_3_b <- df_sum %>%
+  filter(!(is.na(RBP2GO_Score)) & Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  ggplot()+
+  aes(x = interaction (RBD_status, RBP_status), y = RBP2GO_Score, 
+      color = interaction (RBD_status, RBP_status), fill = interaction (RBD_status, RBP_status))+
+  geom_boxplot(size = 0.5, outlier.size = 0.2, alpha = 0.7)+
+  facet_wrap(~Species, ncol = 4)+
+  font("xy.text", size = 8)+
+  stat_compare_means(comparisons = list(c(1,2), c(2,3), c(1,3), c(3,4), c(2,4), c(1,4)), 
+                     method = "wilcox.test",
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                     label = "p.signif", step.increase = 0.04, size = 2, 
+                     label.y = 80, vjust = 0.5, 
+                     bracket.size = 0.2, tip.length = 0.01)+
+  
+  stat_identity(data = df_sum %>%
+                  filter(!(is.na(RBP2GO_Score)) & Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+                  count(Species, RBD_status, RBP_status), aes(label = n, y = -5), geom = "text", size = 1.2,
+                  color = "grey50", hjust = 0.5)+
+  scale_x_discrete(labels = c("Non-RBPs\nwithout RBD", "Non-RBPs\nwith RBD", "RBPs without\nRBD", "RBPs with\nRBD"))+
+  scale_y_continuous(limits = c(-5, 107), breaks = c(0:5*20))+
+  scale_color_manual(values = c("#75A9EB", "#155BCC", "#F27730", "#D94E00"))+
+  scale_fill_manual(values = c("#B6CAE4", "#2D74E5", "#FFCEB3", "#F27730"))+
+  labs(y = "RBP2GO score")+
+  my_theme +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = "4"), 
+        axis.text.y = element_text(angle = 0, hjust=0.5, size = "5"), 
+        axis.title.y = element_text(vjust = 0, hjust=0.5, size = "5.5"), 
+        legend.position = "none",
+        axis.title.x = element_blank())
+
+fig_3_b
+
+df_fig_3 <- df_sum %>% 
+  filter(Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  mutate(RBP2GO_Score = ceiling(RBP2GO_Score)) %>%
+  group_by(Species, RBD_status, RBP2GO_Score) %>%
+  count() %>%
+  pivot_wider(names_from = "RBD_status", values_from = "n", values_fill = 0) %>%
+  mutate(proportion = RBD/(no_RBD + RBD)) 
+
+fig_3_c <- df_fig_3 %>% 
+  ggplot()+
+  aes(x = RBP2GO_Score, y = proportion)+
+  geom_bar(stat = "identity", color = "grey40", fill = "grey40", alpha = 0.5, size = 0.1)+
+  geom_smooth(data = subset(df_fig_3, RBP2GO_Score <= 50), 
+              color = "red", size = 0.2, method = "lm")+
+  geom_segment(x= 50, y = 0, xend = 50, yend = 1, linetype = "dashed", size = 0.2)+
+  stat_cor(data = subset(df_fig_3, RBP2GO_Score <= 50), 
+           method = "pearson", formula = "y~x", color = "red",
+           label.y = 1.2, color = "#F42A41", size = 1.5)+
+  scale_x_continuous(breaks = c((0:5)*20-0.5), labels = c((0:5)*20), expand = c(0.001,1))+
+  scale_y_continuous(breaks = c((0:4)/4), expand = c(0, NA), limits = c(0, 1.3))+
+  labs(x = "RBP2GO score", y = "Proportion of\nRBD-containing proteins")+
+  facet_grid(~Species)+
+  my_theme +
+  theme(legend.text = element_text(size = "6"),
+        axis.text = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"))
+
+fig_3_c
+
+fig_3_d <- df_sum %>%
+  filter(RBD_status == "RBD" & Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  mutate(RBDs_content_fraction = as.numeric(RBDs_content_fraction))%>%
+    ggplot()+
+    aes(x = RBP_status, y = RBDs_content_fraction, color = RBP_status, fill = RBP_status)+
+    geom_boxplot(size = 0.5, outlier.size = 0.2, alpha = 0.7)+
+    scale_color_manual(values = c("#155BCC", "#D94E00"), labels = c("non_RBP" = "Non-RBPs", "RBP" = "RBPs"), name = "")+
+    scale_fill_manual(values = c("#2D74E5", "#F27730"), labels = c("non_RBP" = "Non-RBPs", "RBP" = "RBPs"), name = "")+
+    stat_compare_means(method = "wilcox.test", 
+                       comparisons = list(c(1,2)), 
+                       symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                       label = "p.signif", tip.length = 0.01,
+                       step_increase = 0.2, size = 2)+
+    stat_identity(data = df_rbds_stats, aes(label = n, y = -0.05), geom = "text", 
+                  size = 1.2, color = "grey50", hjust = 0.5)+
+    scale_y_continuous(limits = c(-0.1, 1.15), expand = c(0,0))+
+    labs(y = "RBD content fraction")+
+    scale_x_discrete(labels = c("non_RBP" = "Non-RBPs with RBD", 
+                                  "RBP" = "RBPs with RBD"))+
+    facet_grid(~Species)+
+    my_theme +
+    theme(legend.position = "none",
+          legend.text = element_text(size = "6"),
+          axis.text.x = element_text(size = "4", angle = 45, hjust = 1, vjust = 1), 
+          axis.text.y = element_text(size = "4"), 
+          axis.title.y = element_text(size = "5.5"),
+          axis.title.x = element_blank())
+
+fig_3_d
+
+fig_3_e <-  df_sum %>%
+  filter(!is.na(RBP2GO_Score), Species == "Hs") %>%
+  mutate(RBDs_nb_factor = as.numeric(ifelse(RBDs_nb>7, 8, RBDs_nb)),
+         RBDs_nb = as.numeric(RBDs_nb)) %>%
+  ggplot() +
+  aes(x = RBDs_nb_factor, y = RBP2GO_Score, color = RBP_status,
+      group = interaction(RBDs_nb_factor, RBP_status))+
+  geom_boxplot(size = 0.5, outlier.size = 0.2, alpha = 0.7)+
+    scale_color_manual(values = c("#155BCC", "#D94E00"), labels = c("non_RBP" = "Non-RBPs", "RBP" = "RBPs"), name = "")+
+  scale_x_continuous(limits = c(-0.5, 8.5), breaks = 0:8, labels = c(0, 1, 2, 3, 4, 5, 6, 7, "8 or more"))+
+  labs(x = "Number of RBDs", y = "RBP2GO score")+
+  my_theme +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = "5"),
+        legend.margin = margin(t = 1),
+        axis.text = element_text(size = "5"), 
+        axis.title = element_text(size = "5.5"))
+
+fig_3_e
+
+fig_3 <- ggarrange(ggarrange(fig_3_a, fig_3_b, ncol = 2, labels = c("A", "B"), font.label = list(size = 10, face = "bold"), 
+                             widths = c(0.25, 0.75)),  
+                   ggarrange(fig_3_c, labels = c("C"), nrow = 1, font.label = list(size = 10, face = "bold")),
+                   ggarrange(fig_3_d, fig_3_e, ncol = 2, nrow = 1, 
+                            labels = c("D", "E"), font.label = list(size = 10, face = "bold"), widths = c(0.25, 0.5)),
+              ncol = 1, nrow = 3, heights = c(0.35, 0.35, 0.3))
+
+pdf(file = "Output/Figures/fig_3.pdf", width = 6.3, height = 7)
+annotate_figure(fig_3, fig.lab = "Wassmer et al., Figure 3", fig.lab.pos = "bottom.right", fig.lab.size = 7)+
+  theme(plot.margin = margin(0.1,0.1,0.2,0.1, "cm")) 
+dev.off()
+```
+
+```{r Supplementary Figure S3, message = F, tidy = T, warning = F}
+
+sup_fig_3_a <- df_sum %>%
+  filter(!(is.na(RBP2GO_Score)) & !Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  ggplot()+
+  aes(x = RBD_status, color = RBD_status, 
+      y = RBP2GO_Score, fill = RBD_status)+
+  geom_boxplot(size = 0.5, outlier.size = 0.2, alpha = 0.5)+
+  facet_wrap(~Species, nrow = 1)+
+  font("xy.text", size = 8)+
+  stat_compare_means(comparisons = list(c(1,2)), 
+                     method = "wilcox.test",
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                     label = "p.signif", 
+                     step.increase = 0.1, size = 2, 
+                     bracket.size = 0.2, label.y = 103)+
+  scale_x_discrete(labels = c("No RBD", "RBD"))+
+  scale_y_continuous(limits = c(-10, 115), breaks = c(0, 25 , 50, 75, 100))+
+  scale_color_manual(values = c("grey70", "grey10"))+
+  scale_fill_manual(values = c("grey70", "grey10"))+
+  stat_identity(data = df_sum %>%
+                  filter(!(is.na(RBP2GO_Score)) & !Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+                  count(Species, RBD_status), aes(label = n, y = -10), geom = "text", size = 1.2,
+                  color = "grey50", hjust = 0.5)+
+  labs(y = "RBP2GO score")+
+  my_theme +
+  theme(axis.text.x = element_text(angle = 0, vjust = 0.5, hjust=0.5, size = "4"), 
+        axis.text.y = element_text(angle = 0, hjust=0.5, size = "5"), 
+        axis.title.y = element_text(vjust = 0, hjust=0.5, size = "5.5"), 
+        legend.position = "none",
+        axis.title.x = element_blank())
+
+sup_fig_3_a
+
+sup_fig_3_b <- df_sum %>%
+  filter(!(is.na(RBP2GO_Score)) & !Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  ggplot()+
+  aes(x = interaction (RBD_status, RBP_status), y = RBP2GO_Score, 
+      color = interaction (RBD_status, RBP_status), fill = interaction (RBD_status, RBP_status))+
+  geom_boxplot(size = 0.5, outlier.size = 0.2, alpha = 0.5)+
+  facet_grid(~Species)+
+  font("xy.text", size = 8) +
+  stat_compare_means(comparisons = list(c(1,2), c(2,3), c(1,3), c(3,4), c(2,4), c(1,4)), 
+                     method = "wilcox.test",
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                     label = "p.signif", step.increase = 0.07, size = 2, 
+                     label.y = 80, vjust = 0.5, 
+                     bracket.size = 0.2, tip.length = 0.01)+
+  
+  stat_identity(data = df_sum %>%
+                  filter(!(is.na(RBP2GO_Score)) & !Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+                  count(Species, RBD_status, RBP_status), aes(label = n, y = -5), geom = "text", size = 1.2,
+                  color = "grey50", hjust = 0.5)+
+  scale_x_discrete(labels = c("Non-RBPs\nwithout RBD", "Non-RBPs\nwith RBD", "RBPs without\nRBD", "RBPs with\nRBD"))+
+  scale_y_continuous(limits = c(-5, NA), breaks = c(0:5*20))+
+  scale_color_manual(values = c("#75A9EB", "#155BCC", "#F27730", "#D94E00"))+
+  scale_fill_manual(values = c("#B6CAE4", "#155BCC", "#FFCEB3", "#F27730"))+
+  labs(y = "RBP2GO score")+
+  my_theme +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = "4"), 
+        axis.text.y = element_text(angle = 0, hjust=0.5, size = "5"), 
+        axis.title.y = element_text(vjust = 0, hjust=0.5, size = "5.5"), 
+        legend.position = "none",
+        axis.title.x = element_blank())
+
+sup_fig_3_b
+
+df_rbds_stats <- df_sum %>%
+  filter(RBD_status == "RBD" & !(Species %in% c("Hs", "Mm", "Sc", "Dm"))) %>%
+  group_by(Species, RBP_status) %>%
+  count()
+
+df_sup_fig_3 <- df_sum %>%
+  filter(Species %in% c("At", "Ce", "Ec", "Dr", "Tb")) %>%
+  mutate(RBP2GO_Score = ceiling(RBP2GO_Score)) %>%
+  group_by(Species, RBD_status, RBP2GO_Score) %>%
+  count() %>%
+  pivot_wider(names_from = "RBD_status", values_from = "n", values_fill = 0) %>%
+  mutate(proportion = RBD/(no_RBD + RBD))
+
+sup_fig_3_c <- df_sup_fig_3 %>% 
+  ggplot()+
+  aes(x = RBP2GO_Score, y = proportion)+
+  geom_bar(stat = "identity", color = "grey40", fill = "grey40", alpha = 0.5, size = 0.1)+
+  geom_smooth(data = subset(df_sup_fig_3, RBP2GO_Score <= 50), 
+              color = "red", size = 0.2, method = "lm")+
+  geom_segment(x= 50, y = 0, xend = 50, yend = 1, linetype = "dashed", size = 0.2)+
+  stat_cor(data = subset(df_sup_fig_3, RBP2GO_Score <= 50), 
+           method = "pearson", formula = "y~x", color = "red",
+           label.y = 1.2, color = "#F42A41", size = 1.5)+
+  scale_x_continuous(breaks = c((0:5)*20-0.5), labels = c((0:5)*20), expand = c(0.001,1))+
+  scale_y_continuous(breaks = c((0:4)/4), expand = c(0, NA), limits = c(0, 1.3))+
+  labs(x = "RBP2GO score", y = "Proportion of\nRBD-containing proteins")+
+  facet_grid(~Species)+
+  my_theme +
+  theme(legend.text = element_text(size = "6"),
+        axis.text = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"))
+
+sup_fig_3_c
+
+sup_fig_3_d <- df_sum %>%
+  filter(RBD_status == "RBD" & !Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  mutate(RBDs_content_fraction = as.numeric(RBDs_content_fraction))%>%
+    ggplot()+
+    aes(x = RBP_status, y = RBDs_content_fraction, color = RBP_status, fill = RBP_status)+
+    geom_boxplot(size = 0.5, outlier.size = 0.2, alpha = 0.5)+
+    scale_color_manual(values = c("#155BCC", "#D94E00"), labels = c("non_RBP" = "Non-RBPs", "RBP" = "RBPs"), name = "")+
+    scale_fill_manual(values = c("#2D74E5", "#F27730"), labels = c("non_RBP" = "Non-RBPs", "RBP" = "RBPs"), name = "")+
+    stat_compare_means(method = "wilcox.test", 
+                       comparisons = list(c(1,2)), 
+                       symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                       label = "p.signif", tip.length = 0.01,
+                       step_increase = 0.2, size = 2)+
+    stat_identity(data = subset(df_rbds_stats, !Species %in% c("Hs", "Mm", "Sc", "Dm")), aes(label = n, y = -0.05), geom = "text", 
+                  size = 1.2, color = "grey50", hjust = 0.5)+
+    scale_y_continuous(limits = c(-0.1, 1.2), expand = c(0,0))+
+    labs(y = "RBD content fraction")+
+    scale_x_discrete(labels = c("non_RBP" = "Non-RBPs with RBD", 
+                                  "RBP" = "RBPs with RBD"))+
+    facet_grid(~Species)+
+    my_theme +
+    theme(legend.position = "none",
+          legend.text = element_text(size = "6"),
+          axis.text.x = element_text(size = "4", angle = 45, hjust = 1, vjust = 1), 
+          axis.text.y = element_text(size = "4"), 
+          axis.title.y = element_text(size = "5.5"),
+          axis.title.x = element_blank(), 
+          plot.margin = margin(0.2,0.2,0.5,0.3, "cm"))
+
+sup_fig_3_d
+
+sup_fig_3 <- ggarrange(sup_fig_3_a, sup_fig_3_b,sup_fig_3_c, sup_fig_3_d, 
+                       ncol = 1, nrow = 4, labels = c("A", "B", "C", "D"))
+
+sup_fig_3
+
+pdf(file = "Output/Figures/sup_fig_3.pdf", width = 6.3, height = 7)
+annotate_figure(sup_fig_3, fig.lab = "Wassmer et al., Supplementary Figure S3", fig.lab.pos = "bottom.right", fig.lab.size = 7)+
+  theme(plot.margin = margin(0.1,0.1,0.2,0.1, "cm")) 
+dev.off()
+```
+
+
+# 4. The RBP-enriched RNA-related InterPro family IDs are also strong indicators of RNA-binding ability
+
+```{r  Figure 4, message = F, tidy = T, warning = F}
+
+Fam_IDs_selected <- readRDS("Output/Extended_RBP2GO/Fam_IDs_selected.RDS")
+
+fig_4_a <- Fam_IDs_selected %>% 
+  unique() %>%
+  select(matches(c("InterPro_ID", "RBP_hit"))) %>%  
+  tidyr::pivot_longer(cols = c(2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26), names_to = "Species", values_to = "RBP_hits") %>% 
+  tidyr::pivot_longer(cols = c(2:14), names_to = "Species_2", values_to = "non_RBP_hits") %>% 
+  mutate(Species = gsub("_RBP_hit_InterPro", "", Species), Species_2 = gsub("_non_RBP_hit_InterPro", "", Species_2)) %>%
+  filter(Species == Species_2) %>% 
+  select(-"Species_2") %>%
+  mutate(Species = textclean::mgsub(ifelse(Species == "SaE", "ST", Species), species_list, species_abb)) %>%
+  rowwise() %>%
+  mutate(status = ifelse(RBP_hits > 0 & non_RBP_hits > 0, "Both", 
+                            ifelse(RBP_hits > 0 , "RBP", 
+                                   ifelse(non_RBP_hits > 0, "non_RBP", "absent")))) %>%
+  filter(status != "absent") %>%
+  group_by(Species) %>%
+  dplyr::count(status) %>%
+  ggplot()+
+  aes(x = factor(Species, levels = rev(species_abb)), y = n, fill = factor(status, levels = c("non_RBP", "Both", "RBP")))+
+  geom_bar(stat = "identity")+
+  scale_fill_manual(values = c("#155bcc", "#c3c7cd", "#FF7426"), name = "", 
+                    guide = guide_legend(reverse = TRUE), 
+                    labels = c("non_RBP" = "Non-RBPs", 
+                               "RBP" = "RBPs", 
+                               "Both" = "RBPs + non-RBPs"))+
+  scale_y_continuous(expand = c(0,0), limits = c(0, 600))+
+  labs(y = "Number of Rfam IDs", x = "Species")+
+  theme_bw()+
+  coord_flip()+
+  my_theme+
+  theme(legend.position = "bottom", 
+        legend.text = element_text(size = "5"),
+        legend.margin = margin(t=-5),
+        axis.text = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"))
+
+fig_4_a
+
+fig_4_b <- df_sum %>%
+  filter(!(is.na(RBP2GO_Score)) & Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  ggplot()+
+  aes(x = has_fam_ID, color = has_fam_ID, 
+      y = RBP2GO_Score, fill = has_fam_ID, )+
+  geom_boxplot(size = 0.5, outlier.size = 0.2, alpha = 0.5)+
+  geom_text(data = df_sum %>%
+              filter(!(is.na(RBP2GO_Score)) & Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+              group_by(Species, has_fam_ID) %>%
+              summarise(label = n()), aes(label = label, y = -7), size = 1.5, color = "grey50") +
+  facet_wrap(~Species, ncol = 2)+
+  font("xy.text", size = 8)+
+  stat_compare_means(comparisons = list(c(1,2)), 
+                     method = "wilcox.test",
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                     label = "p.signif", 
+                     step.increase = 0.1, size = 2, 
+                     bracket.size = 0.2, label.y = 103)+
+  scale_x_discrete(labels = c("No Rfam ID", "Rfam ID"))+
+  scale_y_continuous(limits = c(NA, 115), breaks = c(0, 25 , 50, 75, 100))+
+  scale_color_manual(values = c("grey70", "grey10"))+
+  scale_fill_manual(values = c("grey70", "grey10"))+
+  labs(y = "RBP2GO score")+ 
+  my_theme +
+  theme(axis.text.x = element_text(angle = 0, vjust = 0.5, hjust=0.5, size = "4"), 
+        axis.text.y = element_text(angle = 0, hjust=0.5, size = "5"), 
+        axis.title.y = element_text(vjust = 0, hjust=0.5, size = "5.5"), 
+        legend.position = "none",
+        axis.title.x = element_blank())
+
+fig_4_b
+
+fig_4_c <- df_sum %>%
+  filter(!(is.na(RBP2GO_Score)) & Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  ggplot()+
+  aes(x = interaction (has_fam_ID, RBP_status), y = RBP2GO_Score, 
+      color = interaction (has_fam_ID, RBP_status), fill = interaction (has_fam_ID, RBP_status))+
+  geom_boxplot(size = 0.5, outlier.size = 0.2, alpha = 0.7)+
+  geom_text(data = df_sum %>%
+              filter(!(is.na(RBP2GO_Score)) & Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+              group_by(Species, RBP_status, has_fam_ID) %>%
+              summarise(label = n()), aes(label = label, y = -5), size = 1.5, color = "grey50") +
+  facet_wrap(~Species, ncol = 4)+
+  font("xy.text", size = 8)+
+  stat_compare_means(comparisons = list(c(1,2), c(2,3), c(1,3), c(3,4), c(2,4), c(1,4)), 
+                     method = "wilcox.test",
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                     label = "p.signif", step.increase = 0.05, size = 2, 
+                     label.y = 90, vjust = 0.3, 
+                     bracket.size = 0.2, tip.length = 0.01)+
+  scale_y_continuous(limits = c(NA, NA), breaks = c(0, 50 , 100, 150))+
+  scale_color_manual(values = c("#4AB27B", "#20814D", "#852EC8", "#49196E"), 
+                     name = "",
+                     labels = c("FALSE.non_RBP" = "Non-RBPs\nwithout Rfam ID", 
+                              "TRUE.non_RBP" = "Non-RBPs\nwith Rfam ID", 
+                              "FALSE.RBP" = "RBPs without\nRfam ID", 
+                              "TRUE.RBP" = "RBPs with\nRfam ID"))+
+  scale_fill_manual(values = c("#B5FFD8", "#4AB27B", "#CC97F3", "#852EC8"), 
+                     name = "",
+                     labels = c("FALSE.non_RBP" = "Non-RBPs\nwithout Rfam ID", 
+                              "TRUE.non_RBP" = "Non-RBPs\nwith Rfam ID", 
+                              "FALSE.RBP" = "RBPs without\nRfam ID", 
+                              "TRUE.RBP" = "RBPs with\nRfam ID"))+
+  labs(y = "RBP2GO score")+
+  my_theme +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.y = element_text(angle = 0, hjust=0.5, size = "5"), 
+        axis.title.y = element_text(vjust = 0, hjust=0.5, size = "5.5"), 
+        legend.position = "bottom",
+        legend.text = element_text(size = "4"),
+        legend.margin = margin(-10, 0, 0, 0, "pt"),
+        axis.title.x = element_blank())
+
+fig_4_c
+
+df_fig_4 <- df_sum %>% 
+  filter(Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  mutate(RBP2GO_Score = ceiling(RBP2GO_Score), 
+         has_fam_ID = ifelse(has_fam_ID== T, "RBD", "no_RBD")) %>%
+  group_by(Species, has_fam_ID, RBP2GO_Score) %>%
+  count() %>%
+  pivot_wider(names_from = "has_fam_ID", values_from = "n", values_fill = 0) %>% 
+  mutate(proportion = RBD/(no_RBD + RBD)) 
+
+fig_4_d <- df_fig_4 %>% 
+  ggplot()+
+  aes(x = RBP2GO_Score, y = proportion)+
+  geom_bar(stat = "identity", color = "grey40", fill = "grey40", alpha = 0.5, size = 0.1)+
+  geom_smooth(data = subset(df_fig_4, RBP2GO_Score <= 50), 
+              color = "red", size = 0.2, method = "lm" )+
+  geom_segment(x = 49.5, xend = 49.5, y = 0, yend = 1, color = "black", linetype = "dashed", size = 0.2)+
+  stat_cor(data = subset(df_fig_4, RBP2GO_Score <= 50), 
+              method = "pearson", formula = "y~log(x+1)", color = "red",
+           label.y = 1.2, color = "#F42A41", size = 1)+
+  #scale_x_continuous(breaks = c((0:5)*20-0.5), labels = c((0:5)*20), expand = c(0.001,1))+
+  scale_y_continuous(breaks = c((0:4)/4), expand = c(0, NA), limits = c(0, 1.3))+
+  labs(x = "RBP2GO score", y = "Proportion of\nRfam ID-associated proteins")+
+  facet_grid(~Species)+
+  my_theme +
+  theme(legend.text = element_text(size = "6"),
+        axis.text = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"))
+
+fig_4_d
+
+fig_4_e <- df_sum %>%
+  mutate(Species = factor(Species, levels = species_abb)) %>%
+  filter(Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  ggplot()+
+  aes(x = interaction(RBD_status, has_fam_ID, RBP_status), y = RBP2GO_Score,
+      color = interaction(RBD_status, has_fam_ID, RBP_status), fill = interaction(RBD_status, has_fam_ID, RBP_status)) +
+  geom_boxplot(size = 0.4, outlier.size = 0.2, alpha = 0.7) +
+  geom_text(data = df_sum %>%
+              filter(Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+              group_by(Species, RBP_status,  RBD_status, has_fam_ID) %>%
+              summarise(label = n()), aes(label = label, y = -5), size = 1.5, color = "grey50") +
+  scale_y_continuous(limits = c(-10, 120), breaks = 0:5*20, expand = c(0, 0))+
+  scale_color_manual(values = c("#6187C3", "#124DAE", "#4AB27B", "#20814D", "#F27730", "#FF5C00", "#852EC8", "#49196E"), 
+                     name = "",
+                     labels = c("no_RBD.FALSE.non_RBP" = "Non-RBPs without RBD nor Rfam ID",
+                                "RBD.FALSE.non_RBP" = "Non-RBPs with RBD but without Rfam ID", 
+                                "no_RBD.TRUE.non_RBP" = "Non-RBPs without RBD but with Rfam ID", 
+                                "RBD.TRUE.non_RBP" = "Non-RBPs with RBD and with Rfam ID", 
+                                "no_RBD.FALSE.RBP" = "RBPs without RBD nor Rfam ID",
+                                "RBD.FALSE.RBP" = "RBPs with RBD but without Rfam ID", 
+                                "no_RBD.TRUE.RBP" = "RBPs without RBD but with Rfam ID", 
+                                "RBD.TRUE.RBP" = "RBPs with RBD and with Rfam ID"))+
+  scale_fill_manual(values = c("#9CB8E5", "#2D74E5","#B5FFD8", "#4AB27B", "#FFCEB3", "#F27730", "#CC97F3", "#852EC8"), 
+                     name = "",
+                     labels = c("no_RBD.FALSE.non_RBP" = "Non-RBPs without RBD nor Rfam ID",
+                                "RBD.FALSE.non_RBP" = "Non-RBPs with RBD but without Rfam ID", 
+                                "no_RBD.TRUE.non_RBP" = "Non-RBPs without RBD but with Rfam ID", 
+                                "RBD.TRUE.non_RBP" = "Non-RBPs with RBD and with Rfam ID", 
+                                "no_RBD.FALSE.RBP" = "RBPs without RBD nor Rfam ID",
+                                "RBD.FALSE.RBP" = "RBPs with RBD but without Rfam ID", 
+                                "no_RBD.TRUE.RBP" = "RBPs without RBD but with Rfam ID", 
+                                "RBD.TRUE.RBP" = "RBPs with RBD and with Rfam ID"))+
+  stat_compare_means(comparisons = list(c(1, 2), c(2, 3), c(3, 4),
+                                        c(1, 3), c(2, 4), c(1, 4), 
+                                        c(4, 5), c(5, 6), c(6, 7), c(7, 8),
+                                        c(6, 8), c(5, 8)), 
+                     method = "wilcox.test",
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                     label = "p.signif", vjust = 0.3,  
+                     step.increase = 0.05, size = 2, 
+                     tip.length = 0.005, label.y = 55)+
+  labs(y = "RBP2GO score")+
+  facet_grid(.~factor(Species, levels = c("Hs", "Mm", "Sc", "Dm")))+
+  my_theme +
+  theme(legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = "4"),
+        legend.margin = margin(-10, 0, 0, 0, "pt"),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(), 
+        axis.text.y = element_text(size = "4"), 
+        axis.title.y = element_text(size = "5.5"), 
+        plot.margin = margin(0,5,15,5,"pt"))
+
+fig_4_e
+
+fig_4 <- ggarrange(ggarrange(fig_4_a, fig_4_b, nrow = 1, widths = c(0.7, 0.3), 
+                             labels = c("A", "B"), font.label = list(size = 10, face = "bold")), 
+                   ggarrange(fig_4_c, fig_4_d, nrow = 1, widths = c(0.5, 0.5), 
+                             labels = c("C", "D"), font.label = list(size = 10, face = "bold")),
+                   fig_4_e,
+          ncol = 1, nrow = 3, labels = c("", "",  "E"),  
+          font.label = list(size = 10, face = "bold"), 
+          heights = c(0.3, 0.3, 0.4))
+
+fig_4
+
+pdf(file = "Output/Figures/fig_4.pdf", width = 6.3, height = 8)
+annotate_figure(fig_4, fig.lab = "Wassmer et al., Figure 4", fig.lab.pos = "bottom.right", fig.lab.size = 7)+
+  theme(plot.margin = margin(0.1,0.1,0.2,0.1, "cm")) 
+dev.off()
+```
+
+```{r  Supplementary Figure S4, message = F, tidy = T, warning = F}
+
+sup_fig_4_b <- df_sum %>%
+  dplyr::rename("Fam_ID_status" = "has_fam_ID") %>%
+  unite(., "Status", c("RBP_status", "RBD_status", "Fam_ID_status"), sep = "/", ) %>%
+  mutate(Status = factor(Status, levels = c("non_RBP/no_RBD/FALSE", 
+                                            "non_RBP/RBD/FALSE", 
+                                            "non_RBP/no_RBD/TRUE", 
+                                            "non_RBP/RBD/TRUE", 
+                                            "RBP/no_RBD/FALSE", 
+                                            "RBP/RBD/FALSE", 
+                                            "RBP/no_RBD/TRUE", 
+                                            "RBP/RBD/TRUE"))) %>%
+  group_by(Species) %>%
+  mutate(Nb_tot = n()) %>%
+  group_by(Species, Status, Nb_tot) %>% 
+  summarise(Percent = n()/Nb_tot) %>%
+  unique(.) %>%
+  ggplot() +
+  geom_bar(aes(x = Species, y = Percent, fill = Status), stat = "identity")+
+  scale_fill_manual(values = c("#D6F4FF", "#124DAE", "#B5FFD8", "#20814D", "#FFE69B", "#FF5C00", "#E9CCFF", "#49196E"), 
+                    labels = c("non_RBP/no_RBD/FALSE" = "Non-RBPs without RBD\nnor Rfam ID",
+                                "non_RBP/no_RBD/TRUE" = "Non-RBPs without RBD\nbut with Rfam ID", 
+                                "RBP/no_RBD/FALSE" = "RBPs without RBD\nnor Rfam ID", 
+                                "RBP/no_RBD/TRUE" = "RBPs without RBD\nbut with Rfam ID",
+                                "non_RBP/RBD/FALSE" = "Non-RBPs with RBD\nbut without Rfam ID",
+                                "non_RBP/RBD/TRUE" = "Non-RBPs with RBD\nand with Rfam ID", 
+                                "RBP/RBD/FALSE" = "RBPs with RBD\nbut without Rfam ID", 
+                                "RBP/RBD/TRUE" = "RBPs with RBD\nand with Rfam ID"))+
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA), labels = scales::percent)+
+  labs(y = "Percent of total proteins", x = "")+
+  my_theme +
+  guides(fill=guide_legend(nrow=8, byrow=TRUE))+
+  theme(legend.position = "right", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = "4"),
+        axis.text = element_text(size = "4"), 
+        axis.title.y = element_text(size = "5.5"), 
+        axis.title.x = element_blank())
+
+sup_fig_4_b
+
+pdf(file = "Output/Figures/sup_fig_4_B.pdf", width = 6.3, height = 3)
+annotate_figure(ggarrange(sup_fig_4_b, labels = c("B"), font.label = list(size = 10, face = "bold")), 
+                fig.lab = "Wassmer et al., Supplementary Figure S4", fig.lab.pos = "bottom.right", fig.lab.size = 7)+
+  theme(plot.margin = margin(0.1,0.1,0.2,0.1, "cm")) 
+dev.off()
+```
+
+```{r  Supplementary Figure S5, message = F, tidy = T, warning = F}
+
+sup_fig_5_a <- df_sum %>%
+  filter(!(is.na(RBP2GO_Score)) & !Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  ggplot()+
+  aes(x = has_fam_ID, color = has_fam_ID, 
+      y = RBP2GO_Score, fill = has_fam_ID, )+
+  geom_boxplot(size = 0.5, outlier.size = 0.2, alpha = 0.5)+
+  geom_text(data = df_sum %>%
+              filter(!(is.na(RBP2GO_Score)) & !Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+              group_by(Species, has_fam_ID) %>%
+              summarise(label = n()), aes(label = label, y = -7), size = 1.5, color = "grey50") +
+  facet_wrap(~Species, nrow = 1)+
+  font("xy.text", size = 8)+
+  stat_compare_means(comparisons = list(c(1,2)), 
+                     method = "wilcox.test",
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                     label = "p.signif", 
+                     step.increase = 0.1, size = 2, 
+                     bracket.size = 0.2, label.y = 103)+
+  scale_x_discrete(labels = c("No Rfam ID", "Rfam ID"))+
+  scale_y_continuous(limits = c(NA, 115), breaks = c(0, 25 , 50, 75, 100))+
+  scale_color_manual(values = c("grey70", "grey10"))+
+  scale_fill_manual(values = c("grey70", "grey10"))+
+  labs(y = "RBP2GO score")+
+  my_theme +
+  theme(axis.text.x = element_text(angle = 0, vjust = 0.5, hjust=0.5, size = "4"), 
+        axis.text.y = element_text(angle = 0, hjust=0.5, size = "5"), 
+        axis.title.y = element_text(vjust = 0, hjust=0.5, size = "5.5"), 
+        legend.position = "none",
+        axis.title.x = element_blank())
+
+sup_fig_5_a
+
+sup_fig_5_b <- df_sum %>%
+  filter(!(is.na(RBP2GO_Score)) & !Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  ggplot()+
+  aes(x = interaction (has_fam_ID, RBP_status), y = RBP2GO_Score, 
+      color = interaction (has_fam_ID, RBP_status), fill = interaction (has_fam_ID, RBP_status))+
+  geom_boxplot(size = 0.5, outlier.size = 0.2, alpha = 0.7)+
+  geom_text(data = df_sum %>%
+              filter(!(is.na(RBP2GO_Score)) & !Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+              group_by(Species, RBP_status, has_fam_ID) %>%
+              summarise(label = n()), aes(label = label, y = -5), size = 1.5, color = "grey50") +
+  facet_wrap(~Species, nrow = 1)+
+  font("xy.text", size = 8)+
+  stat_compare_means(comparisons = list(c(1,2), c(2,3), c(1,3), c(3,4), c(2,4), c(1,4)), 
+                     method = "wilcox.test",
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                     label = "p.signif", step.increase = 0.07, size = 2, 
+                     label.y = 90, vjust = 0.5, 
+                     bracket.size = 0.2, tip.length = 0.01)+
+  scale_x_discrete(labels = c("FALSE.non_RBP" = "Non-RBPs\nwithout Rfam ID", 
+                              "TRUE.non_RBP" = "Non-RBPs\nwith Rfam ID", 
+                              "FALSE.RBP" = "RBPs without\nRfam ID", 
+                              "TRUE.RBP" = "RBPs with\nRfam ID"))+
+  scale_y_continuous(limits = c(NA, NA), breaks = c(0, 50 , 100, 150))+
+  scale_color_manual(values = c("#4AB27B", "#20814D", "#852EC8", "#49196E"))+
+  scale_fill_manual(values = c("#B5FFD8", "#4AB27B", "#CC97F3", "#852EC8"))+
+  labs(y = "RBP2GO score")+
+  my_theme +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = "4"), 
+        axis.text.y = element_text(angle = 0, hjust=0.5, size = "5"), 
+        axis.title.y = element_text(vjust = 0, hjust=0.5, size = "5.5"), 
+        legend.position = "none",
+        axis.title.x = element_blank())
+
+sup_fig_5_b
+
+df_sup_fig_5 <- df_sum %>% 
+  filter(!Species %in% c("Hs", "Mm", "Sc", "Dm") &!is.na(RBP2GO_Score)) %>%
+  mutate(RBP2GO_Score = ceiling(RBP2GO_Score), 
+         has_fam_ID = ifelse(has_fam_ID== T, "RBD", "no_RBD")) %>%
+  group_by(Species, has_fam_ID, RBP2GO_Score) %>%
+  count() %>%
+  pivot_wider(names_from = "has_fam_ID", values_from = "n", values_fill = 0) %>% 
+  mutate(proportion = RBD/(no_RBD + RBD)) 
+
+sup_fig_5_c <- df_sup_fig_5 %>% 
+  ggplot()+
+  aes(x = RBP2GO_Score, y = proportion)+
+  geom_bar(stat = "identity", color = "grey40", fill = "grey40", alpha = 0.5, size = 0.1)+
+  geom_smooth(data = subset(df_sup_fig_5, RBP2GO_Score <= 50), 
+              color = "red", size = 0.2, method = "lm" )+
+  geom_segment(x = 49.5, xend = 49.5, y = 0, yend = 1, color = "black", linetype = "dashed", size = 0.2)+
+  stat_cor(data = subset(df_sup_fig_5, RBP2GO_Score <= 50), 
+              method = "pearson", formula = "y~log(x+1)", color = "red",
+           label.y = 1.2, color = "#F42A41", size = 1)+
+  #scale_x_continuous(breaks = c((0:5)*20-0.5), labels = c((0:5)*20), expand = c(0.001,1))+
+  scale_y_continuous(breaks = c((0:4)/4), expand = c(0, NA), limits = c(0, 1.3))+
+  labs(x = "RBP2GO score", y = "Proportion of\nRfam ID-associated proteins")+
+  facet_grid(~Species)+
+  my_theme +
+  theme(legend.text = element_text(size = "6"),
+        axis.text = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"))
+
+sup_fig_5_c
+
+sup_fig_5_d <- df_sum %>%
+  mutate(Species = factor(Species, levels = species_abb)) %>%
+  filter(!Species %in% c("Hs", "Mm", "Sc", "Dm") & !is.na(RBP2GO_Score)) %>%
+  ggplot()+
+  aes(x = interaction(RBD_status, has_fam_ID, RBP_status), y = RBP2GO_Score,
+      color = interaction(RBD_status, has_fam_ID, RBP_status), fill = interaction(RBD_status, has_fam_ID, RBP_status)) +
+  geom_boxplot(size = 0.4, outlier.size = 0.2, alpha = 0.7) +
+  geom_text(data = df_sum %>%
+              filter(!Species %in% c("Hs", "Mm", "Sc", "Dm") & !is.na(RBP2GO_Score)) %>%
+              group_by(Species, RBP_status,  RBD_status, has_fam_ID) %>%
+              summarise(label = n()), aes(label = label, y = -5), size = 1, color = "grey50") +
+  scale_y_continuous(limits = c(-10, 120), breaks = 0:5*20, expand = c(0, 0))+
+  scale_color_manual(values = c("#6187C3", "#124DAE", "#4AB27B", "#20814D", "#F27730", "#FF5C00", "#852EC8", "#49196E"),  
+                     name = "",
+                     labels = c("no_RBD.FALSE.non_RBP" = "Non-RBPs without RBD nor Rfam ID",
+                                "RBD.FALSE.non_RBP" = "Non-RBPs with RBD but without Rfam ID", 
+                                "no_RBD.TRUE.non_RBP" = "Non-RBPs without RBD but with Rfam ID", 
+                                "RBD.TRUE.non_RBP" = "Non-RBPs with RBD and with Rfam ID", 
+                                "no_RBD.FALSE.RBP" = "RBPs without RBD nor Rfam ID",
+                                "RBD.FALSE.RBP" = "RBPs with RBD but without Rfam ID", 
+                                "no_RBD.TRUE.RBP" = "RBPs without RBD but with Rfam ID", 
+                                "RBD.TRUE.RBP" = "RBPs with RBD and with Rfam ID"))+
+  scale_fill_manual(values = c("#9CB8E5", "#2D74E5","#B5FFD8", "#4AB27B", "#FFCEB3", "#F27730", "#CC97F3", "#852EC8"), 
+                     name = "",
+                     labels = c("no_RBD.FALSE.non_RBP" = "Non-RBPs without RBD nor Rfam ID",
+                                "RBD.FALSE.non_RBP" = "Non-RBPs with RBD but without Rfam ID", 
+                                "no_RBD.TRUE.non_RBP" = "Non-RBPs without RBD but with Rfam ID", 
+                                "RBD.TRUE.non_RBP" = "Non-RBPs with RBD and with Rfam ID", 
+                                "no_RBD.FALSE.RBP" = "RBPs without RBD nor Rfam ID",
+                                "RBD.FALSE.RBP" = "RBPs with RBD but without Rfam ID", 
+                                "no_RBD.TRUE.RBP" = "RBPs without RBD but with Rfam ID", 
+                                "RBD.TRUE.RBP" = "RBPs with RBD and with Rfam ID"))+
+  stat_compare_means(comparisons = list(c(1, 2), c(2, 3), c(3, 4),
+                                        c(1, 3), c(2, 4), c(1, 4), 
+                                        c(4, 5), c(5, 6), c(6, 7), c(7, 8),
+                                        c(6, 8), c(5, 8)), 
+                     method = "wilcox.test",
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                     label = "p.signif", 
+                     step.increase = 0.05, size = 1.5, 
+                     tip.length = 0.005, label.y = 55)+
+  labs(y = "RBP2GO score")+
+  facet_grid(.~Species)+
+  my_theme +
+  theme(legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = "4"),
+        legend.margin = margin(0, 0, 0, 0, "pt"),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.x = element_blank(), 
+        axis.text.y = element_text(size = "4"), 
+        axis.title.y = element_text(size = "5.5"), 
+        plot.margin = margin(0,0,10,5, "pt"))
+
+sup_fig_5_d
+
+sup_fig_5 <- ggarrange(sup_fig_5_a, sup_fig_5_b, sup_fig_5_c, sup_fig_5_d,
+          ncol = 1, nrow = 4, labels = c("A", "B", "C", "D"),  
+          font.label = list(size = 10, face = "bold"), 
+          heights = c(0.2, 0.25, 0.25, 0.3))
+
+sup_fig_5
+
+pdf(file = "Output/Figures/sup_fig_5.pdf", width = 6.3, height = 7)
+annotate_figure(sup_fig_5, fig.lab = "Wassmer et al., Supplementary Figure S5", fig.lab.pos = "bottom.right", fig.lab.size = 7)+
+  theme(plot.margin = margin(0.1,0.1,0.2,0.1, "cm")) 
+dev.off()
+```
+
+
+# 5. Disordered regions are enriched in proteins with RBDs
+
+```{r Figure 5, message = F, tidy = T, warning = F}
+        
+fig_5_a <- df_sum %>%
+  filter(Species %in% c("Hs", "Mm")) %>%
+  ggplot()+
+    aes(x = interaction(RBD_status, RBP_status), fill = interaction(RBD_status, RBP_status), color = interaction(RBD_status, RBP_status), y = IDR_content_fraction)+
+    geom_boxplot(size = 0.4, outlier.size = 0.25, alpha = 0.7)+
+    scale_x_discrete(labels = c("no_RBD.non_RBP" = "Non-RBPs without RBD", 
+                                "RBD.non_RBP" = "Non-RBPs with RBD", 
+                                "no_RBD.RBP" = "RBPs without RBD", 
+                                "RBD.RBP" = "RBPs with RBD"))+
+    scale_color_manual(values = c("#2D74E5", "#155BCC", "#F27730", "#D94E00" ))+
+    scale_fill_manual(values = c("#B6CAE4", "#2D74E5", "#FFCEB3", "#F27730" ))+
+    stat_compare_means(method = "wilcox.test", 
+                       comparisons = list(c(1,2),c(2,3),c(3,4), c(1,3), c(2,4), c(1,4)), 
+                       symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                       label = "p.signif", bracket.size = 0.2, 
+                       label.y = c(1.05, 1.12, 1.19, 1.26, 1.33, 1.4, 1.47),
+                       tip.length = 0.01, size = 1.5, vjust = 0.7)+
+    facet_grid(.~factor(Species, levels = c("Hs", "Mm")))+
+    scale_y_continuous(limits = c(-0.08, 1.55), expand = c(0,0))+
+    labs(y = "Disordered fraction")+
+    stat_identity(data = df_sum %>%
+                    filter(Species %in% c("Hs", "Mm")) %>%
+                    group_by(Species, RBP_status, RBD_status) %>%
+                    count(), mapping = aes(label = n, y = rep(-0.05, 8)),
+                    geom = "text", color = "grey50", hjust = 0.5, size = 1.5)+
+    my_theme +
+    theme(axis.ticks.x = element_blank(),
+          axis.title.x = element_blank(), 
+          legend.position = "none",
+          legend.text = element_text(size = "5"),
+          axis.text = element_text(size = "4"), 
+          axis.title.y = element_text(size = "5.5"))
+
+fig_5_a
+
+fig_5_b <- df_sum %>% 
+  mutate(Species = factor(Species, levels = species_abb), IDR_status = factor(IDR_status, levels = c("no_IDR", "IDR"))) %>%
+  filter(!(is.na(RBP2GO_Score)) & Species %in% c("Hs", "Mm")) %>%
+  ggplot()+
+    aes(x = interaction(IDR_status, RBD_status, RBP_status), 
+        y = RBP2GO_Score, 
+        color = interaction(IDR_status, RBD_status, RBP_status), 
+        fill = interaction(IDR_status, RBD_status, RBP_status))+
+    geom_boxplot(size = 0.4, outlier.size = 0.2, alpha = 0.9)+
+    scale_color_manual(values = c("#448463", "#124DAE", "#448463", "#124DAE", "#D94E00", "#A42822", "#D94E00", "#A42822"), 
+                       name = "",
+                       labels = c("no_IDR.no_RBD.non_RBP" = "Non-RBPs without\nRBD nor IDR", 
+                                "IDR.no_RBD.non_RBP" = "Non-RBPs without\nRBD but with IDR", 
+                                "no_IDR.RBD.non_RBP" = "Non-RBPs with RBD\nbut without IDR", 
+                                "IDR.RBD.non_RBP" = "Non-RBPs with RBD\nand IDR", 
+                                "no_IDR.no_RBD.RBP" = "RBPs without\nRBD nor IDR", 
+                                "IDR.no_RBD.RBP" = "RBPs without\nRBD but with IDR", 
+                                "no_IDR.RBD.RBP" = "RBPs with RBD\nbut without IDR", 
+                                "IDR.RBD.RBP" = "RBPs with RBD\nand IDR"))+
+  scale_fill_manual(values = c("#B3DED5", "#87B0F1", "#5EAF9E", "#2D74E5", "#F1B290", "#EB988A", "#FF7B31", "#D4655E"), 
+                       name = "",
+                       labels = c("no_IDR.no_RBD.non_RBP" = "Non-RBPs without\nRBD nor IDR", 
+                                "IDR.no_RBD.non_RBP" = "Non-RBPs without\nRBD but with IDR", 
+                                "no_IDR.RBD.non_RBP" = "Non-RBPs with RBD\nbut without IDR", 
+                                "IDR.RBD.non_RBP" = "Non-RBPs with RBD\nand IDR", 
+                                "no_IDR.no_RBD.RBP" = "RBPs without\nRBD nor IDR", 
+                                "IDR.no_RBD.RBP" = "RBPs without\nRBD but with IDR", 
+                                "no_IDR.RBD.RBP" = "RBPs with RBD\nbut without IDR", 
+                                "IDR.RBD.RBP" = "RBPs with RBD\nand IDR"))+
+    stat_compare_means(method = "wilcox.test", 
+                       comparisons = list(c(1,2), c(3, 4), c(5, 6), c(7, 8)), 
+                       symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                       label = "p.signif",
+                       label.y = c(60, 70, 80, 90), 
+                       step_increase=0, tip.length = 0.01, size = 1.5)+
+    stat_identity(data = df_sum %>%
+                    filter(Species %in% c("Hs", "Mm")) %>%
+                    group_by(Species, RBP_status, RBD_status, IDR_status) %>%
+                    count(), mapping = aes(label = n, y = rep(-2, 16)),
+                    geom = "text", color = "grey50", hjust = 0.5, size = 1.5)+
+    facet_wrap(.~Species, nrow = 1)+
+    scale_y_continuous(limits = c(-4, 100), breaks = c(0, 20, 40, 60, 80, 100), expand = c(0,0))+
+    labs(y = "RBP2GO score")+
+    my_theme +
+    theme(axis.text.x = element_blank(), 
+          axis.title.x = element_blank(), 
+          axis.ticks.x = element_blank(),
+          legend.position = "bottom", 
+          legend.text = element_text(size = "5", margin = margin(b=2, t=2)),
+          legend.justification = "center",
+          legend.margin = margin(t = -5),
+          axis.text.y = element_text(size = "4"), 
+          axis.title.y = element_text(size = "5.5"))
+
+fig_5_b
+
+fig_5_c <- df_sum %>%
+  filter(!is.na(RBP2GO_Score), Species %in% c("Hs", "Mm")) %>%
+  mutate(IDR_range = ifelse(IDR_content_fraction == 0, 0.1, ceiling(IDR_content_fraction*10)/10)) %>%
+  ggplot() +
+  aes(x =IDR_range , y = RBP2GO_Score, color = RBP_status, group = interaction(IDR_range, RBP_status))+
+  geom_boxplot(size = 0.2, outlier.size = 0.2, alpha = 0.7)+
+  geom_smooth(aes(x = IDR_content_fraction, group = RBP_status), method = "lm", size = 0.2, show.legend = F)+
+  stat_cor(aes(x = IDR_content_fraction, group = RBP_status), method = "pearson", label.x = c(0, 0.65), label.y = 105, size = 1.5, show.legend = F)+
+  scale_color_manual(values = c("#155BCC", "#D94E00"), labels = c("non_RBP" = "Non-RBPs", "RBP" = "RBPs"), name = "", guide = "legend")+
+  scale_x_continuous(breaks = (1:11)/10-0.05, labels = (0:10)/10)+
+  scale_y_continuous(limits = c(NA, 110))+
+  labs(x = "Disordered fraction", y = "RBP2GO score")+
+  facet_grid(~Species)+
+  my_theme +
+  theme(legend.position = "right",
+        legend.text = element_text(size = "5"),
+        axis.text = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"))
+
+fig_5_c
+
+
+fig_5 <- ggarrange(fig_5_a, fig_5_b, fig_5_c,  
+                   labels = c("A", "B", "C"), font.label = list(size = 10, face = "bold"),
+                   nrow = 3, heights = c(0.3, 0.45, 0.25))
+fig_5
+
+pdf(file = "Output/Figures/fig_5.pdf", width = 6.3, height = 8)
+annotate_figure(fig_5, fig.lab = "Wassmer et al., Figure 5", fig.lab.pos = "bottom.right", fig.lab.size = 7)+
+  theme(plot.margin = margin(0.1,0.1,0.2,0.1, "cm")) 
+dev.off()
+```
+
+```{r Supplementary Figure S6, message = F, tidy = T, warning = F}
+
+sup_fig_6 <- df_sum %>%
+  filter(!Species %in% c("Hs", "Mm")) %>%
+  mutate(Species = factor(Species, levels = c("Ec", "Dr", "Tb", "ST", "Lm", "Ld", "Sc", "Dm", "At", "Ce", "Pf"))) %>%
+  ggplot()+
+    aes(x = interaction(RBD_status, RBP_status), color = interaction(RBD_status, RBP_status), fill = interaction(RBD_status, RBP_status), y = IDR_content_fraction)+
+    geom_boxplot(size = 0.25, outlier.size = 0.25, alpha = 0.7)+
+    scale_x_discrete(labels = c("no_RBD.non_RBP" = "Non-RBPs without RBD", 
+                                "RBD.non_RBP" = "Non-RBPs with RBD", 
+                                "no_RBD.RBP" = "RBPs without RBD", 
+                                "RBD.RBP" = "RBPs with RBD"))+
+    scale_color_manual(values = c("#2D74E5", "#155BCC", "#F27730", "#D94E00"), 
+                       labels = c("no_RBD.non_RBP" = "Non-RBPs\nwithout RBD", 
+                                "RBD.non_RBP" = "Non-RBPs\nwith RBD", 
+                                "no_RBD.RBP" = "RBPs without\nRBD", 
+                                "RBD.RBP" = "RBPs with\nRBD"), 
+                       name = "")+
+    scale_fill_manual(values = c("#B6CAE4", "#2D74E5", "#FFCEB3", "#F27730"), 
+                       labels = c("no_RBD.non_RBP" = "Non-RBPs\nwithout RBD", 
+                                "RBD.non_RBP" = "Non-RBPs\nwith RBD", 
+                                "no_RBD.RBP" = "RBPs without\nRBD", 
+                                "RBD.RBP" = "RBPs with\nRBD"), 
+                       name = "")+
+    stat_compare_means(method = "wilcox.test", 
+                       comparisons = list(c(1,2),c(2,3),c(3,4), c(1,3), c(2,4), c(1,4)), 
+                       symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                       label = "p.signif", bracket.size = 0.2, 
+                       label.y = c(1.05, 1.1, 1.15, 1.2, 1.25, 1.3, 1.35),
+                       tip.length = 0.01, size = 1.5, vjust = 0.3)+
+    facet_wrap(.~Species, nrow = 2, as.table = F)+
+    scale_y_continuous(limits = c(-0.08, 1.4), expand = c(0,0))+
+    labs(y = "Disordered fraction")+
+    stat_identity(data = df_sum %>%
+                    filter(!Species %in% c("Hs", "Mm")) %>%
+                    group_by(Species, RBP_status, RBD_status) %>%
+                    count(), mapping = aes(label = n, y = rep(-0.05, 44)),
+                    geom = "text", color = "grey50", hjust = 0.5, size = 1.5)+
+    my_theme +
+    theme(axis.text.x = element_blank(),
+          axis.line.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.x = element_blank(), 
+          legend.position = c(0.92, 0.8),
+          legend.text = element_text(size = "5.5", margin = margin(0.2, 0, 0.2, 0, "cm")),
+          axis.text.y = element_text(size = "4"), 
+          axis.title.y = element_text(size = "5.5"), 
+          plot.margin = margin(0, 0, 0.3, 0, "cm"))
+
+sup_fig_6
+
+pdf(file = "Output/Figures/sup_fig_6.pdf", width = 6.3, height = 4)
+annotate_figure(sup_fig_6, fig.lab = "Wassmer et al., Supplementary Figure S6", fig.lab.pos = "bottom.right", fig.lab.size = 7)+
+  theme(plot.margin = margin(0.1,0.1,0.2,0.1, "cm")) 
+dev.off()
+```
+
+```{r Supplementary Figure S7, message = F, tidy = T, warning = F}
+
+sup_fig_7_a <- df_sum %>% 
+  mutate(IDR_status = factor(IDR_status, levels = c("no_IDR", "IDR"))) %>%
+  filter(!(is.na(RBP2GO_Score)) & !Species %in% c("Hs", "Mm")) %>%
+  filter(!Species %in% c("Hs", "Mm")) %>%
+  mutate(Species = factor(Species, levels = c( "Ce", "Ec", "Dr", "Tb", "Sc", "Dm", "At"))) %>% 
+  ggplot()+
+    aes(x = interaction(IDR_status, RBD_status, RBP_status), 
+        y = RBP2GO_Score, 
+        color = interaction(IDR_status, RBD_status, RBP_status), 
+        fill = interaction(IDR_status, RBD_status, RBP_status))+
+    geom_boxplot(size = 0.4, outlier.size = 0.2, alpha = 0.9)+
+    scale_color_manual(values = c("#448463", "#124DAE", "#448463", "#124DAE", "#D94E00", "#A42822", "#D94E00", "#A42822"), 
+                       name = "",
+                       labels = c("no_IDR.no_RBD.non_RBP" = "Non-RBPs without\nRBD nor IDR", 
+                                "IDR.no_RBD.non_RBP" = "Non-RBPs without\nRBD but with IDR", 
+                                "no_IDR.RBD.non_RBP" = "Non-RBPs with RBD\nbut without IDR", 
+                                "IDR.RBD.non_RBP" = "Non-RBPs with RBD\nand IDR", 
+                                "no_IDR.no_RBD.RBP" = "RBPs without\nRBD nor IDR", 
+                                "IDR.no_RBD.RBP" = "RBPs without\nRBD but with IDR", 
+                                "no_IDR.RBD.RBP" = "RBPs with RBD\nbut without IDR", 
+                                "IDR.RBD.RBP" = "RBPs with RBD\nand IDR"))+
+  scale_fill_manual(values = c("#B3DED5", "#87B0F1", "#5EAF9E", "#2D74E5", "#F1B290", "#EB988A", "#FF7B31", "#D4655E"), 
+                       name = "",
+                       labels = c("no_IDR.no_RBD.non_RBP" = "Non-RBPs without\nRBD nor IDR", 
+                                "IDR.no_RBD.non_RBP" = "Non-RBPs without\nRBD but with IDR", 
+                                "no_IDR.RBD.non_RBP" = "Non-RBPs with RBD\nbut without IDR", 
+                                "IDR.RBD.non_RBP" = "Non-RBPs with RBD\nand IDR", 
+                                "no_IDR.no_RBD.RBP" = "RBPs without\nRBD nor IDR", 
+                                "IDR.no_RBD.RBP" = "RBPs without\nRBD but with IDR", 
+                                "no_IDR.RBD.RBP" = "RBPs with RBD\nbut without IDR", 
+                                "IDR.RBD.RBP" = "RBPs with RBD\nand IDR"))+
+    stat_compare_means(method = "wilcox.test", 
+                       comparisons = list(c(1,2), c(3, 4), c(5, 6), c(7, 8)), 
+                       symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                       label = "p.signif",
+                       label.y = c(60, 70, 80, 90), 
+                       step_increase=0, tip.length = 0.01, size = 1.5)+
+    stat_identity(data = df_sum %>%
+                    filter(!(is.na(RBP2GO_Score)) & !Species %in% c("Hs", "Mm")) %>%
+                    group_by(Species, RBP_status, RBD_status, IDR_status) %>%
+                    count(), mapping = aes(label = n, y = rep(-5, 56)),
+                    geom = "text", color = "grey50", hjust = 0.5, size = 1.5)+
+    facet_wrap(.~Species, nrow = 2, as.table = F)+
+    scale_y_continuous(limits = c(-10, 100), breaks = c(0, 20, 40, 60, 80, 100), expand = c(0,0))+
+    labs(y = "RBP2GO score")+
+    my_theme +
+    theme(axis.text.x = element_blank(), 
+          axis.title.x = element_blank(),
+          axis.line.x = element_blank(), 
+          axis.ticks.x = element_blank(),
+          legend.position = c(0.87, 0.8), 
+          legend.text = element_text(size = "5", margin = margin(b=2, t=2)),
+          legend.justification = "center",
+          legend.margin = margin(t = 0),
+          axis.text.y = element_text(size = "4"), 
+          axis.title.y = element_text(size = "5.5"))
+
+sup_fig_7_a
+
+sup_fig_7_b <- df_sum %>%
+  filter(!is.na(RBP2GO_Score), !Species %in% c("Hs", "Mm")) %>%
+  filter(!Species %in% c("Hs", "Mm")) %>%
+  mutate(IDR_range = ifelse(IDR_content_fraction == 0, 0.1, ceiling(IDR_content_fraction*10)/10)) %>%
+  mutate(Species = factor(Species, levels = c( "Ce", "Ec", "Dr", "Tb", "Sc", "Dm", "At"))) %>% 
+  ggplot() +
+  aes(x =IDR_range , y = RBP2GO_Score, color = RBP_status, group = interaction(IDR_range, RBP_status))+
+  geom_boxplot(size = 0.2, outlier.size = 0.2, alpha = 0.7)+
+  geom_smooth(aes(x = IDR_content_fraction, group = RBP_status), method = "lm", size = 0.2, show.legend = F)+
+  stat_cor(aes(x = IDR_content_fraction, group = RBP_status), method = "pearson", label.x = c(0, 0.65), label.y = 100, size = 1.5, show.legend = F)+
+  scale_color_manual(values = c("#155BCC", "#D94E00"), labels = c("non_RBP" = "Non-RBPs", "RBP" = "RBPs"), name = "")+
+  scale_x_continuous(breaks = (1:11)/10-0.05, labels = (0:10)/10)+
+  scale_y_continuous(limits = c(NA, 110))+
+  labs(x = "Disordered fraction", y = "RBP2GO score")+
+  facet_wrap(~Species, nrow =2, as.table = F)+
+  my_theme +
+  theme(legend.position = c(0.87, 0.8),
+        legend.text = element_text(size = "5"),
+        axis.text = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"))
+
+sup_fig_7_b
+
+sup_fig_7 <-ggarrange(sup_fig_7_a, sup_fig_7_b, ncol = 1, align = "h", 
+                                 labels = c("A", "B"), font.label = list(size = 10, face = "bold"))
+sup_fig_7
+
+pdf(file = "Output/Figures/sup_fig_7.pdf", width = 6.3, height = 8)
+annotate_figure(sup_fig_7, fig.lab = "Wassmer et al., Supplementary Figure S7", fig.lab.pos = "bottom.right", fig.lab.size = 7)+
+  theme(plot.margin = margin(0.1,0.1,0.2,0.1, "cm")) 
+dev.off()
+```
+
+
+# 6. New RBP candidates can be identified from non-RBPs with RBDs
+
+```{r Figure 6, message = F, tidy = T, warning = F}
+
+non_RBPs_RBD_highly_studied <- df_sum %>%
+  filter(Species %in% c("Hs", "Mm", "Sc", "Dm"), RBP_status == "non_RBP", RBD_status == "RBD") %>%
+  pull(Uniprot_ID) %>%
+  unique() %>%
+  length()
+
+non_RBPs_RBD_lowly_studied <- df_sum %>%
+  filter(!Species %in% c("Hs", "Mm", "Sc", "Dm"), RBP_status == "non_RBP", RBD_status == "RBD") %>%
+  pull(Uniprot_ID) %>%
+  unique() %>%
+  length()
+
+fig_6_a <- df_sum %>%
+  mutate(Coverage = factor(ifelse(Species %in% c("Hs", "Mm", "Sc", "Dm"), "High", "Low"), levels = c("Low", "High"))) %>%
+  filter(RBP_status == "RBP" | RBD_status == "RBD") %>%
+  group_by(Coverage, RBP_status) %>% 
+  count() %>%
+  ggplot()+
+  aes(x = Coverage, y = n, fill = RBP_status) +
+  geom_bar(stat = "identity", position = "stack")+
+  geom_text(label = c(non_RBPs_RBD_lowly_studied, non_RBPs_RBD_lowly_studied, non_RBPs_RBD_highly_studied, non_RBPs_RBD_highly_studied),
+            y = c(15000, 15000, 16000, 16000), color = "#155BCC", size = 1.5)+
+  labs(x = "Study\ncoverage", y = "Number of proteins")+
+  scale_fill_manual(values = c("#155BCC","#FF7426"), 
+                    labels = c("RBPs" = "RBPs", 
+                               "non_RBP" = "Non-RBPs with RBD"), 
+                    name = "",
+        guide = guide_legend(reverse = T),)+
+  scale_y_continuous(expand = c(0,0), limits = c(0, 16300))+
+  my_theme +
+  theme(legend.position = "right",
+        legend.margin = margin(t = -5),
+        legend.text = element_text(size = "5"),
+        legend.title = element_text(size = "5.5"),
+        axis.text = element_text(size = "4"),
+        axis.text.y = element_text(margin = margin(l = 5, r = 2)),
+        axis.title.y = element_text(margin = margin(l = 8)),
+        axis.title = element_text(size = "5.5", angle = 0, vjust = 0.5))+
+  coord_flip()
+
+fig_6_a
+
+GO_MF_df <- readRDS("Output/GO_enrichment/combined_MF_list_whole_proteome.rds") %>%
+  filter(enriched_in > 4, average_enrichment > 5)%>% 
+  select(term_label, contains(c("fold", "fdr")), enriched_in, average_enrichment) %>% 
+  pivot_longer(cols = contains("fold"), 
+               names_to = "Species",
+               values_to = c("Fold_enrichment")) %>%
+  pivot_longer(cols = contains("fdr"), 
+               names_to = "Species2",
+               values_to = "FDR") %>%
+  mutate(Species = textclean::mgsub(gsub("_fold_enrichment", "", Species), species_list, species_abb),
+         Species2 = textclean::mgsub(gsub("_fdr", "", Species2), species_list, species_abb)) %>% 
+  filter(Species == Species2) %>%
+  select(-Species2) %>%
+  mutate(Species= factor(Species, levels = species_abb), 
+         Color = ifelse(grepl("RNA|nucleosome|nuclease|nucleic acid|nucleotidyltransferase|DNA|polymerase|helicase|translation|ligase", 
+                              term_label), "#26A851", 
+                        ifelse(grepl("reductase|hydrogenase|isomerase|deoxygenase", term_label), "#0047B9",
+                               ifelse(grepl("chromatin|histone|nucleosome", term_label), "#FF7426", "black"))), 
+         length_term = nchar(term_label), 
+         term_label = stringr::str_wrap(term_label, 75))%>% 
+  arrange(average_enrichment) %>%
+  select(-FDR)
+
+fig_6_b <- GO_MF_df %>%
+  ggplot(aes(x=Species, y=fct_inorder(term_label), fill=Fold_enrichment))+
+  geom_tile()+
+  scale_fill_viridis_c(option = "magma", name = stringr::str_wrap("Fold enrichment", 15))+
+  my_theme +
+  theme(axis.text.y = element_text(size="3", colour = unique(GO_MF_df[, c(1,6)])$Color),
+        axis.title.y = element_text(size = "6", hjust = 0.95),
+        axis.title.x = element_text(size = "6"),
+        legend.position = "bottom",
+        legend.margin = margin(t = -5, l = -50),
+        legend.text = element_text(size = "5"),
+        legend.title = element_text(size = "5.5", vjust = 0.8),
+        axis.text.x = element_text(size = "3.5"), 
+        axis.ticks = element_blank(), 
+        axis.line = element_blank())+
+  ylab("GO molecular function")  
+
+fig_6_b
+
+GO_BP_df <- readRDS("Output/GO_enrichment/combined_BP_list_whole_proteome.rds") %>%
+  filter(enriched_in > 4, average_enrichment > 5) %>% 
+  select(term_label, contains(c("fold", "fdr")), enriched_in, average_enrichment) %>% 
+  pivot_longer(cols = contains("fold"), 
+               names_to = "Species",
+               values_to = c("Fold_enrichment")) %>%
+  pivot_longer(cols = contains("fdr"), 
+               names_to = "Species2",
+               values_to = "FDR") %>%
+  mutate(Species = textclean::mgsub(gsub("_fold_enrichment", "", Species), species_list, species_abb),
+         Species2 = textclean::mgsub(gsub("_fdr", "", Species2), species_list, species_abb)) %>% 
+  filter(Species == Species2) %>%
+  select(-Species2) %>%
+  mutate(Species = textclean::mgsub(gsub("_fold_enrichment", "", Species), species_list, species_abb)) %>% 
+  mutate(Species= factor(Species, levels = species_abb), 
+         Color = ifelse(grepl("RNA|nucleosome|nuclease|nucleic acid|nucleotidyltransferase|DNA|polymerase|helicase|translation|ligase", term_label), "#26A851", 
+                        ifelse(grepl("redox", term_label), "#0047B9",
+                               ifelse(grepl("chromatin|histone|nucleosome", term_label), "#FF7426", "black"))), 
+         length_term = nchar(term_label), 
+         term_label = stringr::str_wrap(term_label, 75)) %>% 
+  arrange(average_enrichment)%>%
+  select(-FDR)
+
+
+fig_6_c <- GO_BP_df %>%
+  ggplot(aes(x=Species, y=fct_inorder(term_label), fill=Fold_enrichment))+
+  geom_tile(size = 1)+
+  scale_fill_viridis_c(option = "magma", name = stringr::str_wrap("Fold enrichment", 20))+
+  my_theme+
+  theme(axis.text.y = element_text(size="3", colour = unique(GO_BP_df[, c(1,6)])$Color),
+        axis.title.y = element_text(size = "6", hjust = 0.95),
+        axis.title.x = element_text(size = "6"),
+        legend.position = "bottom",
+        legend.margin = margin(t = -5, l = -50),
+        legend.text = element_text(size = "5"),
+        legend.title = element_text(size = "5.5", vjust = 0.8),
+        axis.text.x = element_text(size = "3.5"), 
+        axis.title = element_text(size = "5.5"), 
+        axis.ticks = element_blank(), 
+        axis.line = element_blank())+
+  ylab("GO biological process")  
+
+fig_6_c
+
+fig_6 <- ggarrange(ggarrange(fig_6_a, labels = "A", font.label = list(size = 10, face = "bold")),
+                   ggarrange(fig_6_b, fig_6_c, ncol = 2, 
+                             widths = c(1, 1), labels = c("B", "C"),  font.label = list(size = 10, face = "bold")) + theme(plot.margin = margin(0,0,0.2,0, "cm")) ,
+                   nrow = 2, heights = c(0.1, 0.6))
+
+fig_6
+
+pdf(file = "Output/Figures/fig_6.pdf", width = 6.3, height = 6)
+annotate_figure(fig_6, fig.lab = "Wassmer et al., Figure 6", fig.lab.pos = "bottom.right", fig.lab.size = 7)+
+  theme(plot.margin = margin(0.1,0.1,0.2,0.1, "cm")) 
+dev.off()
+```
+
+
+# 7. New RBDs can be predicted in RBPs without known RBDs and high RBP2GO score 
+
+```{r Figure 7, message = F, tidy = T, warning = F}
+
+df_enrichments <- readRDS( "Output/New_RBDs/HS_newly_discovered_RBDs_all.RDS")
+df_select <- readRDS("Output/New_RBDs/HS_newly_discovered_RBDs_select.RDS")
+
+fig_7_a <- df_enrichments %>%
+  filter(interest > 0 & freq_ratio > 1) %>%
+  ggplot()+
+  geom_point(aes(x = log2(enrichment), y = -log10(p_adj), color = interest*937), size = 0.5, shape = 1)+
+  scale_color_viridis_b(option = "magma", direction = -1,
+                        name = "Number of proteins\ncontaining the domain",
+                        breaks = c(1, 2, 5, 10, 20, 50), 
+                        end = 0.95,
+                        begin = 0)+
+  geom_vline(xintercept= c(-1, 1), col="red3", size = 0.5) +
+  geom_hline(yintercept=-log10(0.05), col="red3", size = 0.5) +
+  facet_wrap(~dataset, labeller = as_labeller(c("low_score" = "Ref: RBPs with\na low score", 
+                                       "non_RBP_no_RBD" = "Ref: Non-RBPs\nwithout RBD", 
+                                       "proteome" = "Ref: Whole\nproteome")))+
+  my_theme +
+  theme(legend.position = "bottom",
+        legend.text = element_text(size = "5"),
+        legend.title = element_text(size = "5.5"),
+        legend.margin = margin(t = -5),
+        axis.text = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"))+
+  labs(y = expression(paste("-log10(adjusted ", italic("P"),"-value)")), x = "log2(enrichment)")
+fig_7_a
+
+color_list <- df_select %>% 
+  arrange(desc(interest)) %>%
+  mutate(color = ifelse(domains %in% c("IPR002130", "IPR003594"), "#FF5C00", 
+                        ifelse(domains %in% c("IPR001715", "IPR018159", "IPR002017"), "#009933",
+                               ifelse(domains %in% c("IPR000225", "IPR002652", "IPR032413"), "#0047B9", "black")))) %>%
+  select(domains, color) %>%
+  unique() %>% 
+  pull(color) 
+
+fig_7_b <- df_select %>% 
+  arrange(desc(interest)) %>%
+  ggplot()+
+  aes(x = fct_inorder(domains), y = enrichment, color = p_adj)+
+  geom_point(size = 1.5, shape = 17)+
+  scale_color_viridis_c(option = "magma", name = expression(paste("Adjusted ", italic("P"),"-value")), 
+                        trans = "log10", end = 0.95)+
+  scale_y_continuous(limits = c(0, NA), 
+                     oob = squish_infinite, 
+                     labels = c(0, 10, 20, 30, "Inf"))+
+  facet_grid(dataset~., labeller = as_labeller(c("low_score" = "RBPs with\na low score", 
+                                       "non_RBP_no_RBD" = "Non-RBPs\nwithout RBD", 
+                                       "proteome" = "Whole\nproteome")))+
+  labs(x = "InterPro domain ID", y = "Fold enrichment")+
+  my_theme +
+  theme(legend.position = "right",
+        legend.margin = margin(l = -5),
+        legend.text = element_text(size = "5"),
+        legend.title = element_text(size = "5.5"),
+        axis.text.x = element_text(angle = 45, size = "4", vjust = 1, hjust = 1, color = color_list),
+        axis.text.y = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"))
+fig_7_b
+
+df_new_RBDs <- df_sum %>% 
+  rowwise()%>%
+  mutate(New_RBDs = ifelse(length(intersect(unlist(strsplit(Interpro_domains, ";")), unique(df_select$domains)))>0, "Yes", "No"), 
+         Species = factor(Species, levels = species_abb)) %>%
+  mutate(RBD_status = factor(ifelse(RBD_status == "RBD", "old_RBD", ifelse(New_RBDs == "Yes", "new_RBD", "no_RBD")), levels = c("no_RBD", "old_RBD", "new_RBD")), 
+         List_new_RBDs = list(intersect(unlist(strsplit(Interpro_domains, ";")), unique(df_select$domains)))) 
+
+fig_7_c <- df_new_RBDs %>%
+  filter(Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  ggplot()+
+  aes(x = RBP_status, fill = RBD_status)+
+  geom_bar(stat = "count", position = "fill", width = 0.95)+
+  scale_fill_manual(values = c("#c3c7cd", "#208d44", "#30D567"), labels = c("no_RBD" = "No RBD",
+                                                                            "new_RBD" = "With new RBD only", 
+                                                                            "old_RBD" = "With selected RBD"), 
+                    name = "")+
+  scale_y_continuous(expand = c(0, 0))+
+  scale_x_discrete(labels = c("non_RBP" = "non-RBP", "RBP" = "RBP"), expand = c(0.05, 0.05))+
+  facet_grid(~factor(Species, levels = species_abb), scales = "free")+
+  labs(y = "Proportion of proteins")+
+  my_theme +
+  theme(legend.position = "bottom", 
+        legend.margin = margin(t = -5),
+        axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, size = "4"), 
+        axis.title.x = element_blank(), 
+        legend.text = element_text(size = "5"),
+        legend.title = element_text(size = "5.5"),
+        axis.text.y = element_text(size = "4"), 
+        axis.title.y = element_text(size = "5.5"))
+
+fig_7_c
+
+fig_7_d <- df_new_RBDs[!(is.na(df_new_RBDs$RBP2GO_Score)),] %>% 
+  filter(Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  mutate(RBD_status = factor(RBD_status, levels = c("no_RBD", "new_RBD", "old_RBD"))) %>%
+  ggplot()+
+  aes(x = RBD_status, y = RBP2GO_Score, color = RBD_status, fill = RBD_status)+
+  geom_boxplot(size = 0.25, outlier.size = 0.25, outlier.alpha = 0.6)+
+  scale_color_manual(values = c("#79828E", "#208d44", "#145A2B"))+
+  scale_fill_manual(values = c("#c3c7cd", "#30D567", "#208d44"))+
+  scale_x_discrete(labels = c("no_RBD" = "No RBD",
+                              "new_RBD" = "With new RBD only", 
+                              "old_RBD" = "With selected RBD"), 
+                   name = "")+
+  stat_compare_means(method = "wilcox.test", 
+                     comparisons = list(c(1,2), c(2,3), c(1,3)), 
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                     label = "p.signif", vjust = 0.5,
+                     size = 1.5, tip.length = 0.01)+
+  geom_text(data = df_new_RBDs[!(is.na(df_new_RBDs$RBP2GO_Score)),] %>% 
+              filter(Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+              group_by(Species, RBD_status) %>% 
+              count(), 
+            aes(x = RBD_status, y = -5, label = n), 
+            size = 1.5, color = "grey70")+
+  facet_grid(~factor(Species, levels = species_abb), scales = "free")+
+  my_theme +
+  labs(y = "RBP2GO score")+
+  theme(legend.position = "none",
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(), 
+        axis.title.x = element_blank(), 
+        axis.text.y = element_text(size = "4"), 
+        axis.title.y = element_text(size = "5.5"))
+
+fig_7_d
+
+IPR <- read.csv("Input/Downloads/InterPro_entries.list.tsv", sep = "\t")
+
+df_prots_new_RBDs <- df_sum %>% 
+  rowwise()%>%
+  mutate(New_RBDs = ifelse(length(intersect(unlist(strsplit(Interpro_domains, ";")), unique(df_select$domains)))>0, "Yes", "No"),
+         New_RBDs_list = list(intersect(unlist(strsplit(Interpro_domains, ";")), unique(df_select$domains)))) %>%
+  rowwise() %>%
+  select(-matches("IDR")) %>%
+  filter(New_RBDs == "Yes" & RBD_status == "no_RBD") %>%
+  mutate(New_RBDs_list = paste(list(IPR$ENTRY_NAME[unlist(lapply(New_RBDs_list, grep, IPR$ENTRY_AC))]), sep = ",")) 
+
+fig_7_e <- df_new_RBDs %>%
+  filter(Species %in% c("Hs", "Mm", "Sc", "Dm")) %>%
+  select(-c(RBD_status, RBP2GO_Score)) %>%
+  group_by(Species, RBP_status, New_RBDs) %>%
+  count() %>% 
+  pivot_wider(names_from = "RBP_status", values_from = "n") %>%
+  group_by(Species) %>%
+  mutate(p_value = fisher.test(data.frame(list(RBP), list(non_RBP)))$p.value) %>%
+  mutate(non_RBP = non_RBP/sum(non_RBP), RBP = RBP/sum(RBP), enrichment = RBP/non_RBP) %>% 
+  filter(New_RBDs == "Yes") %>%
+  mutate(p_adj = p.adjust(p_value, method = "fdr"), Species = factor(Species, levels = species_abb), 
+         p_signif = ifelse(p_adj <0.001, "***", ifelse(p_adj<0.01, "**", ifelse(p_adj<0.05, "*", "ns")))) %>%
+  ggplot() +
+  aes(x = Species, y = enrichment, 
+      xend = Species, yend = 0)+
+  geom_point(color = "#0047B9") +
+  geom_segment(color = "#0047B9") +
+  geom_text(aes(label = p_signif, y = enrichment + 0.1), color = "black", size = 1.5) +
+  labs(y = "Fold enrichment\nin RBPs vs non-RBPs") +
+  my_theme +
+  theme(legend.position = "none",
+        axis.text = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"))
+
+fig_7_e
+
+df_RBDs <- readRDS("Output/New_RBDs/Number_peptides.rds") %>%
+  mutate(Type = factor(ifelse(Type == "short_listed", "selected", Type), levels = c("not_selected", "new", "selected")))
+
+fig_7_f <-  df_RBDs %>% 
+  ggplot()+
+  aes(x = Type, y= log2(norm_pep_per_domain + 10e-2), fill = Type, color = Type)+
+  geom_boxplot(width = 0.5, size = 0.25, outlier.size = 0.25, alpha = 0.5)+ 
+  stat_compare_means(method = "wilcox.test", paired = F, 
+                     comparisons = list(c(1,2), c(2, 3), c(1,3)), label = "p.signif",
+                     symnum.args = list(cutpoints = c(0, 0.001, 0.01, 0.05, Inf), symbols = c("***", "**", "*", "ns")),
+                     label.y = 3.5, step.increase = 0.05, tip.length = 0.01, size = 1.5)+
+  geom_text(data = df_RBDs %>% 
+              filter(!is.na(norm_pep_per_domain)) %>%
+              count(Type), aes(label = paste("Nb domains:", n), y = -4),color = "black",  size = 1.5)+
+  geom_text(data = aggregate(norm_pep_per_domain~Type, df_RBDs, median) %>% 
+              mutate(norm_pep_per_domain = round(log2(norm_pep_per_domain + 10e-2), digits = 2)), 
+            aes(label = paste("median:", norm_pep_per_domain), y = 3), size = 1.5)+
+  labs(y = "log2(Mean proportion of the peptides\noverlapping in the domain, normalized\nby the coverage of the domain + 10e-2)") +
+  scale_x_discrete(labels = c("Not selected", 
+                              "New", 
+                              "Selected"))+
+  scale_color_manual(values = c("#79828E", "#208d44", "#145A2B"))+
+  scale_fill_manual(values = c("#c3c7cd", "#30D567", "#208d44"))+
+  my_theme+
+  theme(legend.position = "none", 
+        axis.title.x = element_blank(), 
+        axis.text = element_text(size = "4"), 
+        axis.title = element_text(size = "5.5"),  
+        plot.margin = unit(c(5,310,5,2), "pt"))
+
+fig_7_f
+
+fig_7 <- ggarrange(ggarrange(fig_7_a, fig_7_b, nrow = 1, widths = c(0.4, 0.6), 
+                             labels = c("A", "B"),  font.label = list(size = 10, face = "bold")), 
+                   ggarrange(ggarrange(fig_7_c, fig_7_d, nrow = 1, widths = c(0.42, 0.58),
+                             common.legend = T, legend = "bottom", labels = c("C", "D"),  font.label = list(size = 10, face = "bold")), 
+                             ggarrange(fig_7_e, labels = "E",  font.label = list(size = 10, face = "bold")), 
+                             nrow = 1, widths = c(0.75, 0.25)), 
+                   ggarrange(fig_7_f,  nrow = 1,
+                             labels = c("F"),  font.label = list(size = 10, face = "bold"), 
+                             label.y = 1.03), 
+                   nrow = 3, heights = c(0.4, 0.3, 0.3))
+fig_7
+
+pdf(file = "Output/Figures/fig_7_A_B_C_D_E_F.pdf", width = 6.3, height = 6)
+annotate_figure(fig_7, fig.lab = "Wassmer et al., Figure 7", fig.lab.pos = "bottom.right", fig.lab.size = 7)+
+  theme(plot.margin = margin(0.1,0.1,0.2,0.1, "cm"))  
+dev.off()
+```
+
+
+# 8. A new RBP2GO composite score supports defining a high-confidence human RBP list
+
+```{r Figure 8, message = F, tidy = T, warning = F}
+
+fig_8_b <- df_score %>% filter(Species == "Hs") %>%
+  pivot_longer(cols = c("RBP2GO_Score", "Composite_Score"), values_to = "Score", names_to = "Type") %>%
+  mutate(Type = factor(Type, levels = c("RBP2GO_Score", "Composite_Score"))) %>%
+  ggplot()+
+  aes(x = interaction (has_annot, RBP_status), y = Score, 
+      fill = Type, color = fct_rev(Type))+
+  scale_color_manual(name = "", labels = c("RBP2GO\ncomposite score", "RBP2GO score"), 
+                    values = c("#1c9c4eff", "#D94E00"))+
+  scale_fill_manual(name = "", labels = c("RBP2GO\ncomposite score", "RBP2GO score"), 
+                    values = c("#21a64d8c", "#F27730"))+
+  introdataviz::geom_split_violin(scale = "width", alpha = 0.7, width = 0.8, size = 0.25)+
+  geom_boxplot(outlier.shape = NA, coef = 0, width = 0.15, alpha = 0.8, size = 0.25)+
+  stat_identity(data = df_score %>%
+                  filter(Species == "Hs") %>%
+                  count(Species, has_annot, RBP_status), 
+                aes(label = n, y = -5, fill = NA, color = NA), geom = "text", size = 1.5,
+                  color = "grey50", hjust = 0.5)+
+  scale_x_discrete(labels = c("Non-RBPs without\nRBD nor Rfam ID", "Non-RBPs with\nRBD or Rfam ID", "RBPs without\n RBD nor Rfam ID", "RBPs with\nRBD or Rfam ID"))+
+  scale_y_continuous(limits = c(-5, 107), breaks = c(0:5*20))+
+  facet_wrap(~Species, ncol = 4)+
+  guides(color = guide_legend(reverse = T, byrow = T), 
+         fill = guide_legend(reverse = T, byrow = T))+
+  my_theme+
+  theme(axis.title.x = element_blank(),  
+        legend.position = "right",
+        axis.text = element_text(size = "5"), 
+        axis.title = element_text(size = "6"),
+        legend.spacing = unit(0.5, "cm"),
+        legend.key.height = unit(0.5, "cm"),
+        legend.text = element_text(size = "6"), 
+        plot.margin = margin(5, 5, 10, 5))
+
+fig_8_b
+
+pdf(file = "Output/Figures/fig_8_B.pdf", width = 4.5, height = 2)
+fig_8_b+
+  theme(plot.margin = margin(0.1,0.2,0.2,0.1, "cm"))  
+dev.off()
+```
+
+```{r Supplementary Figure S8, message = F, tidy = T, warning = F}
+
+df_cor <- df_score %>% filter(Species == "Hs") %>% 
+  select(Component_1, Component_2, Component_3, RBP2GO_Score) %>% 
+  dplyr::rename("Component 1" = "Component_1", 
+         "Component 2" = "Component_2", 
+         "Component 3" = "Component_3",  
+         "RBP2GO score" = "RBP2GO_Score" ) %>% 
+  cor(use = "complete.obs") %>%
+  reshape2::melt() 
+
+sup_fig_8 <- df_cor %>%
+  ggplot()+
+  aes(x = Var1, y = fct_rev(Var2), fill = value)+
+  geom_tile()+
+  geom_text(aes(label = round(value, digits = 2)), size = 2)+
+  scale_fill_distiller(palette = "RdYlBu", name = "Correlation\ncoefficient")+
+  my_theme+
+  theme(axis.title = element_blank(), 
+        axis.line = element_blank(), 
+        axis.ticks = element_blank(), 
+        axis.text = element_text(size = "5"), 
+        legend.text = element_text(size = "5"), 
+        legend.title = element_text(size = "6"), 
+        legend.position = "top", 
+        plot.margin = margin(0.1, 0.1, 0.5, 0.1, "cm"))
+
+sup_fig_8
+
+pdf(file = "Output/Figures/sup_fig_8.pdf", width = 4, height = 3)
+annotate_figure(sup_fig_8, fig.lab = "Wassmer et al., Supplementary Figure S8", fig.lab.pos = "bottom.right", fig.lab.size = 7)+
+  theme(plot.margin = margin(0.1,0.2,0.2,0.1, "cm"))  
+dev.off()
+```
+

@@ -1,0 +1,2371 @@
+---
+title: "Refining the pool of RNA-binding domains advances the classification and prediction of RNA-binding proteins"
+author: "Elsa Wassmer"
+date: "06/05/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, tidy = TRUE, warning = FALSE, message = FALSE)
+```
+
+### Folders
+
+Here we create the folders in which the output datasets will be stored.
+All of the datasets used in this study as input are stored in the "Input" folder.
+For the chunks that will take longer to run, a timeframe indication is given at the beginning of the chunk. 
+
+```{r folders, include = T, tidy = T, eval = T}
+dir.create("Output")
+## In this Output folder, we create the folders where the results of the analysis will be stored
+setwd("Output")
+dir.create("Extended_RBP2GO")
+dir.create("New_RBDs")
+dir.create("New_score")
+dir.create("Database_update")
+dir.create("GO_enrichment")
+```
+
+### Librairies
+
+The following packages will be used during the analysis. We propose here a possibility to get the packages installed, that worked for us (under R version 4.2.2). If you encounter problems with the installation, please trouble shout this part first before continuing with the analysis. 
+
+```{r libraries, include=T, tidy=TRUE, eval=T}
+if (!nzchar(system.file(package="tidyverse"))){install.packages("tidyverse", dependencies = T)}
+library(tidyverse)
+
+if (!nzchar(system.file(package="readxl"))){install.packages("readxl", dependencies = T)}
+library(readxl)
+
+if (!nzchar(system.file(package="jsonlite"))){install.packages("jsonlite", dependencies = T)}
+library(jsonlite)
+
+if (!nzchar(system.file(package="BiocManager"))) {install.packages("BiocManager")}
+library(BiocManager)
+
+if (!nzchar(system.file(package="rtracklayer"))){BiocManager::install("rtracklayer")}
+library(rtracklayer)
+    
+if (!nzchar(system.file(package="valr"))){install.packages("valr", dependencies = T)}
+library(valr)
+
+if (!nzchar(system.file(package="dplyr"))){install.packages("dplyr", dependencies = T)}
+library(dplyr)
+
+if (!nzchar(system.file(package="tidyr"))){install.packages("tidyr", dependencies = T)}
+library(tidyr)
+
+if (!nzchar(system.file(package="ggpubr"))){install.packages("ggpubr", dependencies = T)}
+library(ggpubr)
+
+if (!nzchar(system.file(package="ggsignif"))){install.packages("ggsignif", dependencies = T)}
+library(ggsignif)
+
+if (!nzchar(system.file(package="ggbreak"))){install.packages("ggbreak", dependencies = T)}
+library(ggbreak)
+
+if (!nzchar(system.file(package="gridExtra"))){install.packages("gridExtra", dependencies = T)}
+library(gridExtra)
+
+if (!nzchar(system.file(package="jsonlite"))){install.packages("jsonlite", dependencies = T)}
+library(jsonlite)
+
+if (!nzchar(system.file(package="forcats"))){install.packages("forcats", dependencies = T)}
+library(forcats)
+
+if (!nzchar(system.file(package="httr"))){install.packages("httr", dependencies = T)}
+library(httr)
+
+# There are currently some issues with the GO annotation (part 10.) due to updates of the Panther database
+# The package "remotes" apparently solved the issue for now. 
+# More updates/changes are expected in the next weeks.
+# As the results might slightly be different, we froze this part of the analysis to April 6th 2023.
+if (!nzchar(system.file(package="remotes"))){install.packages("remotes", dependencies = T)}
+library(remotes)
+
+if (!nzchar(system.file(package="rbioapi"))){install.packages("rbioapi", dependencies = T)}
+library(rbioapi) # Very useful for accessing biological databases!
+
+if (!nzchar(system.file(package="curl"))){install.packages("curl", dependencies = T)}
+library(curl)
+
+if (!nzchar(system.file(package="pals"))){install.packages("pals", dependencies = T)}
+library(pals)
+
+if (!nzchar(system.file(package="stringr"))){install.packages("stringr", dependencies = T)}
+library(stringr)
+
+if (!nzchar(system.file(package="janitor"))){install.packages("janitor", dependencies = T)}
+library(janitor)
+```
+
+### Functions
+
+The following functions will be used during the analysis:  
+
+```{r functions, include=T, tidy=TRUE, eval=T}
+
+# grep_v() and grepl_v() are a cyclic version of grep() and grepl(), so they can take a vector as a pattern argument 
+
+grep_v<- function(pattern_v, x_v, ignore.case = FALSE, perl = FALSE, value= FALSE, fixed = FALSE, useBytes = FALSE, as_vec= FALSE, coll=";"){
+  newcol<-vector("list", lenght=length(pattern_v))
+  for (i in 1:length(pattern_v)){
+    x<-grep(pattern=pattern_v[i], x=x_v, ignore.case = ignore.case, perl = perl, value= value ,fixed = fixed, useBytes = useBytes)
+    newcol[[i]]<-x
+  }
+  if (as_vec==FALSE){
+    newcol
+  } else {
+    newcol_vec<-unlist(lapply(newcol, paste, collapse=coll))
+    newcol_vec
+  }
+}
+
+grepl_v<- function(pattern_v, x_v, ignore.case = FALSE, perl = FALSE,fixed = FALSE, useBytes = FALSE, as_df=FALSE){
+  newcol<-vector("list", length=length(pattern_v))
+  for (i in 1:length(pattern_v)){
+    x<-grepl(pattern=pattern_v[i], x=x_v, ignore.case = ignore.case, perl = perl ,fixed = fixed, useBytes = useBytes)
+    newcol[[i]]<-x
+  }
+  if (as_df==FALSE){
+    newcol
+  } else {
+    newcol_df<-do.call(rbind.data.frame, newcol) 
+    colnames(newcol_df)<-x_v
+    newcol_df$pattern<-pattern_v
+    newcol_df
+  }
+}
+
+# find_RBDs() can select the elements of a character vector (in this case the list of RBD identifiers) from another character vectors (in our case the column that contains the domain annotations for the proteins)
+find_RBDs <- 
+  function(search_col,pattern_vec){
+    newcolf<-vector("character" ,length = length(search_col))
+    for (i in 1:length(search_col)){
+      x<-paste(unique(grep(gsub('.{1}$', '', gsub(pattern = ";",replacement = "|",x=search_col[i])),pattern_vec,value = T)),collapse =";")
+      newcolf[i]<-x}
+    newcolf
+  }
+```  
+
+  
+## 1. Collecting the list of RBDs based on literature and InterPro database  
+
+The following code downloads the database files from the internet and the supplementary tables of the articles that list RBDs (Gerstberger et al. 2014, Castello et al. 2012, Castello et al. 2016). In addition, we download RBD candidates from the InterPro database, based on their relation to RNA (search for "RNA-binding" in domain descriptions and associated GO terms). The downloaded files can be found in the downloads folder. The files that are created during the analysis are saved in the Output folder.
+
+```{r RBD list creation, warning=F, message=FALSE, tidy=TRUE}
+## Download Pfam-InterPro Cross reference tables, and Pfam and InterPro entries table
+
+  #Pfam entries from Pfam 35.0  - Release date: 19.11.2021
+#download.file("http://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.clans.tsv.gz", 
+#              destfile = "Input/Downloads/Pfam-A.clans_v35.tsv.gz")
+
+Pfam_entries<- 
+  read.table(gzfile("Input/Downloads/Pfam-A.clans_v35.tsv.gz"), 
+              sep="\t", 
+              header=F,
+              quote = "",            
+              col.names = c("Pfam_ID","Clan_Accesion","Clan_ID","Pfam_name","Description")) %>% 
+  select(Pfam_ID, Pfam_name, Description)
+
+  # InterPro entries from InterPro 88.0 - Release date: 03.10.2022
+#download.file("https://ftp.ebi.ac.uk/pub/databases/interpro/entry.list", 
+#              destfile = "Input/Downloads/InterPro_entries.list.tsv")
+
+InterPro_entries<-
+  read.table("Input/Downloads/InterPro_entries.list.tsv",
+             sep= "\t",
+             header= T,
+             quote = "",
+             col.names = c("InterPro_ID", "InterPro_type", "InterPro_name")
+  )
+
+
+  # Download Pfam-InterPro Cross reference tables 
+#download.file("http://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/database_files/interpro.txt.gz",
+#              destfile = "Input/Downloads/Pfam_InterPro_pairs_v35.txt.gz")
+
+Pfam_InterPro_pairs<-read.delim(gzfile("Input/Downloads/Pfam_InterPro_pairs_v35.txt.gz"), header=F, col.names = c("Pfam_ID", "InterPro_ID", "Notes"))[,1:2]
+
+### For each source, we downloaded the list of InterPro IDs or Pfam IDs, depending of what was available. 
+### The cross reference table was used to complete the information for both entries.
+
+## Download the list of InterPro IDs from the Castello et al 2012 study (DOI:https://doi.org/10.1016/j.cell.2012.04.031), and find their Pfam IDs
+#download.file("https://www.cell.com/cms/10.1016/j.cell.2012.04.031/attachment/2e044bcc-9e8b-41fe-b292-0ec213e231b4/mmc4.xls", 
+#              destfile = "Input/Downloads/Castello_2012_RBD_list.xls", mode = "wb")
+
+RBD_from_Castello <- 
+  read_excel("Input/Downloads/Castello_2012_RBD_list.xls") %>% filter(Source=="interpro", oddsRatio>1) %>% select(ID) # Select RBDs
+colnames(RBD_from_Castello)<-"InterPro_ID"
+
+RBD_from_Castello_info<- 
+  RBD_from_Castello %>% 
+  left_join(Pfam_InterPro_pairs, by=c("InterPro_ID" = "InterPro_ID")) %>%
+  left_join(InterPro_entries, by=c("InterPro_ID"="InterPro_ID")) %>%
+  left_join(Pfam_entries, by=c("Pfam_ID"= "Pfam_ID")) %>%
+  mutate(Castello_2012 = "X")
+
+# Download the list of the Pfam entries from Castello 2016 (DOI:https://doi.org/10.1016/j.molcel.2016.06.029), only the significant ones (p-value < 0.05) 
+# (the list had to be copied by hand from the supplementary data of the paper)
+RBD_from_Castello_2016 <- read.csv("Input/Downloads/RBDs_Castello_2016_Pfam.csv")
+colnames(RBD_from_Castello_2016) <- c("Pfam_ID")
+
+RBD_from_Castello_2016_info <- RBD_from_Castello_2016 %>% 
+  left_join(Pfam_InterPro_pairs, by="Pfam_ID") %>% 
+  left_join(InterPro_entries, by = "InterPro_ID") %>% 
+  left_join(Pfam_entries, by = "Pfam_ID")%>%
+  mutate(Castello_2016 = "X")
+
+## Download the list of Pfam IDs from the Gerstberger et al 2014 study (DOI:https://doi.org/10.1038/nrg3813), and find their associated InterPro IDs! 
+#download.file("https://static-content.springer.com/esm/art%3A10.1038%2Fnrg3813/MediaObjects/41576_2014_BFnrg3813_MOESM23_ESM.xlsx",
+#              destfile = "Input/Downloads/GerstbergerS1.xlsx", mode = "wb")
+
+RBD_Gerstberger<- 
+  read_excel("Input/Downloads/GerstbergerS1.xlsx", skip=1, col_names = c("Pfam_name", "Number")) %>% select(Pfam_name)
+
+RBD_Gerstberger_info<- 
+  RBD_Gerstberger %>% 
+  left_join(Pfam_entries, by=c("Pfam_name" = "Pfam_name")) %>%
+  left_join(Pfam_InterPro_pairs, by=c("Pfam_ID" = "Pfam_ID")) %>%
+  left_join(InterPro_entries, by=c("InterPro_ID" = "InterPro_ID"))%>%
+  mutate(Gerstberger_2014 = "X")             
+
+## Download the list of all InterPro IDs that have a GO annotation
+#download.file("https://ftp.ebi.ac.uk/pub/databases/interpro/releases/88.0/interpro2go", 
+#               destfile = "Input/Downloads/interpro2go.txt")
+
+## Load the list of the InterPro domains related to "RNA-binding" in their description, that was saved directly from the InterPro website (InterPro v88)
+
+RBD_InterPro_1 <- read_excel("Input/Downloads/InterPro_RNA-binding.xlsx")$Accession %>%
+  data.frame() %>%
+  mutate(IPR_RNA_binding_text = "X") %>%
+  dplyr::rename("InterPro_ID" = ".")
+
+## Load the list of the InterPro domains overlapping with the "RNA-binding" homologous superfamily (IPR035979), 
+## that was saved directly from the InterPro website (InterPro v88)
+
+RBD_InterPro_2 <- read.csv("Input/Downloads/Interpro_IPR035979.csv", header = T) %>%
+  select(x) %>%
+  dplyr::rename("InterPro_ID" = "x") %>%
+  mutate(IPR_RNA_binding_hom_fam = "X") 
+
+# Load the list of InterPro IDs annotated with GO term RNA-binding (GO:0003723)
+
+RBD_InterPro_3 <- read.csv("Input/Downloads/interpro2go.txt", sep = ";", header = F, skip = 5) %>%
+  dplyr::rename(InterPro_ID = V1, 
+         GO_term = V2) %>%
+  filter (GO_term == " GO:0003723") %>%
+  mutate(InterPro_ID = str_extract(InterPro_ID, "IPR\\d{6}")) %>%
+  select(InterPro_ID) %>%
+  mutate(IPR_RNA_binding_GO = "X")
+
+## Combine the first two lists and add the unique entries from the third list. Keep the domain IDs 
+## and join with the additional information
+RBD_InterPro_info <- data.frame(InterPro_ID = append(RBD_InterPro_1 $InterPro_ID, 
+                                                     append(setdiff(RBD_InterPro_2$InterPro_ID, RBD_InterPro_1$InterPro_ID), 
+                                                     setdiff(RBD_InterPro_3$InterPro_ID, RBD_InterPro_1$InterPro_ID)))) %>%
+  left_join(Pfam_InterPro_pairs, by=c("InterPro_ID" = "InterPro_ID")) %>%
+  left_join(InterPro_entries, by=c("InterPro_ID"="InterPro_ID")) %>%
+  left_join(Pfam_entries, by=c("Pfam_ID"= "Pfam_ID")) %>%
+  left_join(RBD_InterPro_1) %>%
+  left_join(RBD_InterPro_2) %>%
+  left_join(RBD_InterPro_3) 
+
+## Combine the datasets into one table and remove duplicated rows
+RBD_combined <- rbind(RBD_from_Castello_info %>%
+                      select(InterPro_ID, InterPro_name, InterPro_type, Pfam_ID, Pfam_name, Description),
+                      rbind(RBD_from_Castello_2016_info %>%
+                      select(InterPro_ID, InterPro_name,Pfam_ID, InterPro_type, Pfam_name, Description), 
+                          rbind(RBD_Gerstberger_info %>%
+                        select(InterPro_ID, InterPro_name,Pfam_ID, InterPro_type, Pfam_name, Description), 
+                      RBD_InterPro_info %>%
+                          select(InterPro_ID, InterPro_name,Pfam_ID, InterPro_type, Pfam_name, Description)))) %>%
+                       unique()
+
+## Add information on the available IDs
+RBD_combined <- RBD_combined %>%
+  mutate(annotation_status = ifelse(is.na(Pfam_ID) & is.na(InterPro_ID),"only Pfam_name", 
+                                    ifelse(!is.na(Pfam_ID) & is.na(InterPro_ID), "missing Interpro_ID",
+                                           ifelse(is.na(Pfam_ID) & !is.na(InterPro_ID), "only InterPro_ID", "fully annotated"))))
+```
+
+The online databases such as UniProt were updated after the publication of the studies mentioned above. As a consequence, some identifiers need to be updated too. Therefore, we downloaded the older versions of Pfam and InterPro databases, cross-referenced them with the current databases and removed or updated the old identifiers.
+
+```{r update of the Pfam IDs part 1, warning=F, message=FALSE, tidy=TRUE}
+
+# Removing dead InterPro entries
+RBD_combined <- 
+ RBD_combined %>% 
+   filter(!(annotation_status == "only InterPro_ID" & is.na(InterPro_name)))
+
+  # Download new IDs for dead Pfam entries
+#download.file("http://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/database_files/dead_family.txt.gz",
+#              destfile = "Input/Downloads/dead_family.txt.gz")
+
+
+deadPfam<-read.delim(gzfile("Input/Downloads/dead_family.txt.gz"), 
+                     header=F )[,1:4] 
+    colnames(deadPfam)<-c("Old_ID", "Name", "Note","New_ID")
+
+  # Download the list of Pfam entries from when Gerstberger et al was published      
+#download.file("http://ftp.ebi.ac.uk/pub/databases/Pfam/releases/Pfam27.0/Pfam-A.clans.tsv.gz",
+#              destfile = "Input/Downloads/Pfam-A.clans_v27.tsv.gz")
+
+oldPfam <- read.table(gzfile("Input/Downloads/Pfam-A.clans_v27.tsv.gz"), 
+             sep="\t", 
+             header=F,
+             quote = "",
+             col.names = c("Pfam_ID_old","Clan_Accesion","Clan_ID","Pfam_name_old","Description_old", "", "")) %>% 
+      select(Pfam_ID_old, Pfam_name_old, Description_old)
+  
+
+# Load the new annotations for the Pfam entries that have a new ID.
+RBD_unann<- 
+  RBD_combined %>% filter(annotation_status=="only Pfam_name") %>% 
+  left_join(deadPfam, by= c("Pfam_name"="Name")) %>% 
+  left_join(oldPfam, by= c("Pfam_name"= "Pfam_name_old")) %>% 
+  select(Pfam_name, Old_ID, New_ID, Note, Pfam_ID_old, Description_old) %>%
+  mutate(Pfam_ID = ifelse(is.na(New_ID),Pfam_ID_old, New_ID)) %>% ungroup() %>%
+  select(Pfam_name, Pfam_ID)
+```
+
+10 entries still don't have an ID but this could be done manually.
+```{r update of the Pfam IDs part 2, warning=F, message=FALSE, tidy=TRUE}
+  RBD_unann[RBD_unann$Pfam_name=="2_5_RNA_ligase","Pfam_ID"]<-"PF02834"
+  RBD_unann[RBD_unann$Pfam_name=="3_5_exonuc","Pfam_ID"]<-"PF01612"
+  RBD_unann[RBD_unann$Pfam_name=="Lactamase_B2","Pfam_ID"]<-"" # Not found
+  RBD_unann[RBD_unann$Pfam_name=="RNA_pol_delta","Pfam_ID"]<-"PF05066"
+  RBD_unann[RBD_unann$Pfam_name=="Ribonuclease_BN","Pfam_ID"]<-"PF03631"
+  RBD_unann[RBD_unann$Pfam_name=="Ribosomal_S23p","Pfam_ID"]<-"PF05635"
+  RBD_unann[RBD_unann$Pfam_name=="RnaseH","Pfam_ID"]<-"PF00075"
+  RBD_unann[RBD_unann$Pfam_name=="dsRNA_bind","Pfam_ID"]<-"PF03368"
+  RBD_unann[RBD_unann$Pfam_name=="tRNA_anti","Pfam_ID"]<-"PF01336"
+  RBD_unann[RBD_unann$Pfam_name=="tRNA_synt_2b","Pfam_ID"]<-"" # Not found
+  # Two entries are not found, which will be excluded.
+  RBD_unann<- RBD_unann %>% filter(Pfam_ID !="") 
+  colnames(RBD_unann)<-c("Pfam_name_old", "Pfam_ID")
+
+  # Parse new name of domains, and the cross reference for the domains
+  RBD_unann_info<-RBD_unann %>% left_join(Pfam_entries, by=c("Pfam_ID"="Pfam_ID"))%>% ungroup() %>% 
+    left_join(Pfam_InterPro_pairs, by=c("Pfam_ID"="Pfam_ID")) %>% left_join(InterPro_entries, by=c("InterPro_ID"="InterPro_ID"))
+  colnames(RBD_unann_info)<-c("Pfam_name_old", paste(colnames(RBD_unann_info)[2:7], "_new", sep = ""))
+  
+  # Replace missing values in the RBD combined list:
+  RBD_combined_new<- RBD_combined %>% 
+    left_join(RBD_unann_info, by=c("Pfam_name"="Pfam_name_old")) %>%
+    left_join(RBD_from_Castello_2016_info[, c(1,7)], by = "Pfam_ID")%>%
+    left_join(RBD_from_Castello_info[, c(1,7)], by = "InterPro_ID") %>%
+    left_join(RBD_Gerstberger_info[, c(1,7)], by = "Pfam_name") %>%
+    left_join(RBD_InterPro_info[, c(1, 7, 8, 9)], by = "InterPro_ID")%>% 
+    mutate(Pfam_ID=ifelse(is.na(Pfam_ID_new), Pfam_ID, Pfam_ID_new)) %>% 
+    mutate(Pfam_name=ifelse(is.na(Pfam_ID_new), Pfam_name, Pfam_name_new)) %>% 
+    mutate(Description=ifelse(is.na(Pfam_ID_new), Description, Description_new)) %>% 
+    mutate(InterPro_type=ifelse(is.na(Pfam_ID_new), InterPro_type, InterPro_type_new)) %>% 
+    mutate(InterPro_ID=ifelse(is.na(Pfam_ID_new), InterPro_ID, InterPro_ID_new)) %>% 
+    mutate(InterPro_name=ifelse(is.na(Pfam_ID_new), InterPro_name, InterPro_name_new)) %>% 
+    select(-matches("_new")) %>% 
+    ungroup() %>% 
+    distinct() %>%
+    mutate(Castello_2012 = replace_na(Castello_2012, ""), 
+           Gerstberger_2014 = replace_na(Gerstberger_2014, ""), 
+           Castello_2016 = replace_na(Castello_2016, ""), 
+           IPR_RNA_binding_text = replace_na(IPR_RNA_binding_text, ""), 
+           IPR_RNA_binding_text = replace_na(IPR_RNA_binding_text, ""), 
+           IPR_RNA_binding_hom_fam = replace_na(IPR_RNA_binding_hom_fam, ""), 
+           IPR_RNA_binding_GO = replace_na(IPR_RNA_binding_GO, ""), 
+           Pfam_ID = replace_na(Pfam_ID, ""), 
+           Pfam_name = replace_na(Pfam_name, "")) %>%
+    ungroup() %>%
+    group_by(InterPro_ID, InterPro_name, InterPro_type)  %>% 
+    summarise(Pfam_ID = paste(Pfam_ID, collapse = ";"),  
+              Pfam_name = paste(Pfam_name, collapse = ";"), 
+              Castello_2012 = ifelse(paste(Castello_2012, collapse = "")=="", "", "X"), 
+              Gerstberger_2014 = ifelse(paste(Gerstberger_2014, collapse = "")=="", "", "X"), 
+              Castello_2016 = ifelse(paste(Castello_2016, collapse = "")=="", "", "X"), 
+              IPR_RNA_binding_text = ifelse(paste(IPR_RNA_binding_text, collapse = "")=="", "", "X"), 
+              IPR_RNA_binding_hom_fam = ifelse(paste(IPR_RNA_binding_hom_fam, collapse = "")=="", "", "X"), 
+              IPR_RNA_binding_GO = ifelse(paste(IPR_RNA_binding_GO, collapse = "")=="", "", "X")
+             ) %>%
+    ungroup()
+    
+    
+  
+  # Split the domains into two different dataframes, for the two different analysis
+  RBD_combined_domains <- RBD_combined_new %>%
+    filter(InterPro_type %in% c("Domain", "Repeat"))
+  
+  RBD_combined_families <- RBD_combined_new %>%
+    filter(InterPro_type == "Family")
+  
+  ### Write the combined list into a csv for manual analysis, and a .rds for later scripts
+write.csv(RBD_combined_new,"Output/Extended_RBP2GO/Combined_ID_list.csv")
+saveRDS(RBD_combined_new,"Output/Extended_RBP2GO/Combined_ID_list.rds")
+write.csv(RBD_combined_domains,"Output/Extended_RBP2GO/Combined_RBD_list.csv")
+saveRDS(RBD_combined_domains,"Output/Extended_RBP2GO/Combined_RBD_list.rds")
+write.csv(RBD_combined_families,"Output/Extended_RBP2GO/Combined_family_ID_list.csv")
+saveRDS(RBD_combined_families,"Output/Extended_RBP2GO/Combined_family_ID_list.rds")
+
+rm(list=ls()[! ls() %in% c("find_RBDs","grep_v", "grepl_v", "species_list")])
+```
+
+
+## 2. Preparation of the data
+
+## 2.1. Extracting UniProt IDs of RBP2GO entries  
+
+The next chunk extracts the UniProt IDs of the RBPs and non-RBPs of the RBP2GO database, and saves them in a separate file. These lists will be used to obtain the Pfam and InterPro annotations for the proteins from the UniProt website, as well as to update the UniProt IDs. 
+
+```{r extract UniProt IDs from_RBP2GO tables, warning=F, message=FALSE, tidy=TRUE}
+species_list<-c("HS", "MM", "SC", "DM", "AT", "CE", "DaR", "EC", "LD", "LM", "PF", "SaE","TB")
+
+for (j in 1:length(species_list)) {
+  
+  species<-species_list[j] # Define species here, by the two capital letters of its latin name (eg.: human=HS, mouse=MM)
+  
+  # Read the necessary files:
+  RBP_species<- readRDS(paste("Input/RBP2GO_RDS_Tables/table_",species,"_Dataset.RDS", sep = ""))
+  non_RBP_species<- readRDS(paste("Input/RBP2GO_RDS_Tables/table_",species,"_Non_Listed_Proteins.RDS", sep = ""))
+  
+  # Extract UniProt IDs and save them to a separate file
+  RBP_species %>% select(Uniprot_ID) %>% write_delim(file=paste("Input/uniprot_list/",species,"_RBP_uniprot_list.txt", collapse = "", sep = ""))
+  non_RBP_species %>% select(Uniprot_ID) %>% write_delim(file=paste("Input/uniprot_list/",species,"_non_RBP_uniprot_list.txt", collapse = "", sep = ""))
+  
+}
+rm(RBP_species)
+rm(non_RBP_species)
+```
+
+__The following steps were done manually:__  
+1. Search for UniProt IDs at https://www.uniprot.org/uploadlists/  
+2. Select the following columns: Entry, Entry name, InterPro, Pfam  
+3. Save files as: species_RBP_domain_crossref.xlsx and species_non_RBP_domain_crossref.xlsx in the Input/uniprot_list folder 
+_These files are already saved so there is no need to do this step again_  
+
+Since some of the UniProt IDs present in the RBP2GO database were since updated by UniProt, it is important to compile all of the obsolete IDs and their replacement to be able to update them in the next step. 
+
+```{r find UniProt IDs to update, message=FALSE, warning=FALSE, results='hide', tidy=TRUE}
+# Here we will use the same process for every species
+species_list<-c("HS", "MM", "SC", "DM", "AT", "CE", "DaR", "EC", "LD", "LM", "PF", "SaE","TB")
+
+Uniprot_old_new <- data.frame()
+for (species in species_list){
+    old_new <- data.frame()
+    # First, the UniProt IDs from the RBP2GO database are loaded, for both RBPs and non-RBPs.
+    data_old <- readRDS(paste0("Input/RBP2GO_RDS_Tables/table_",species,"_Dataset.RDS")) %>%
+      select(Uniprot_ID) %>%
+      rbind(readRDS(paste0("Input/RBP2GO_RDS_Tables/table_",species,"_Non_Listed_Proteins.RDS")) %>%
+              select(Uniprot_ID))
+    
+    # Then the same is done for the new UniProt IDs that were downloaded from the UniProt database previously
+    data_new <- read_excel(paste("Input/uniprot_list/",species,"_RBP_domains_crossref.xlsx",sep = "")) %>%
+      dplyr::rename("New_Uniprot_ID" = "Entry") %>%
+      select(New_Uniprot_ID) %>%
+      rbind(read_excel(paste("Input/uniprot_list/",species,"_non_RBP_domains_crossref.xlsx",sep = "")) %>%
+              dplyr::rename("New_Uniprot_ID" = "Entry") %>%
+              select(New_Uniprot_ID))
+    
+    # The lists are compared to each other to retrieved old IDs that were deleted and new IDs that were created
+    deleted <- setdiff(data_old$Uniprot_ID, data_new$New_Uniprot_ID)
+    new <- setdiff(data_new$New_Uniprot_ID, data_old$Uniprot_ID)
+    
+    # For each new ID, we retrieve the information for the previously used IDs from UniProt.
+    for (new_id in new){
+      old_id <- intersect(rba_uniprot_proteins(accession = new_id)$secondaryAccession, deleted)
+      old_new <- rbind(old_new, data.frame(old_id = old_id, new_id = new_id))
+    }
+    # Next, we can remove these IDs from the list of deleted IDs
+    deleted <- setdiff(deleted, old_new$old_id)
+    
+    # Finally, all old-id/new_id couples are aggregated together, the new_id cells being empty for the UniProt IDs that were deleted or filled with another one. 
+    if (length(deleted) >0){
+      old_new <- rbind(old_new, data.frame(old_id = deleted, new_id = ""))
+    }
+    # And this data is aggregated in the larger dataframe for each species. 
+    Uniprot_old_new <- rbind(Uniprot_old_new, old_new)
+    rm(old_new)
+}
+ 
+# The data on old UniProt IDs and their replacement are stored in a csv file. 
+write_excel_csv(Uniprot_old_new, "Input/Downloads/Old_new_uniprot_IDs.csv")
+rm(Uniprot_old_new)
+```
+
+## 2.2.Searching for RBDs in the proteins of the RBP2GO database  
+
+In this step, we searched for the RBDs in proteins based only on the InterPro IDs we listed above. It is important to note that here we searched for all domains that were listed as RBDs in the mentioned literature and RNA-related InterPro IDs. At the end of the selection procedure, there will be domains in this list that will not be included in the final selection of RBDs.The new RBP2GO tables were saved in the Output/Extended_RBP2GO directory as a .csv file. The tables contain the same information as the original RBP2GO tables, with addition of the "InterPro_domains", "RBD_interPro", "is_RBP" and "has_RBD" columns. 
+
+_Note: running this chunk might take some time (about 5 min) _  
+```{r find RBDs in proteins across species, message=FALSE, warning=FALSE, results='hide', tidy=TRUE}
+species_list<-c("HS", "MM", "SC", "DM", "AT", "CE", "DaR", "EC", "LD", "LM", "PF", "SaE","TB")
+
+# Read combined RBD list
+RBD_combined <- readRDS("Output/Extended_RBP2GO/Combined_RBD_list.rds")
+
+# Find RBDs in the list of proteins, and save them into a separate file
+for (j in 1:length(species_list)){
+  
+  species<- species_list[j]
+  
+    print(paste("finding RBDs in", species))
+    
+    # Load the files from the RBP2GO database and remove the "entry_Name" column which will be replaced
+    RBP_species<- readRDS(paste("Input/RBP2GO_RDS_Tables/table_",species,"_Dataset.RDS", sep = "")) %>%
+      mutate(RBP2GO_Score = as.numeric(RBP2GO_Score), Nb_Datasets = as.numeric(Nb_Datasets), 
+             Listing_Count = as.numeric(Listing_Count), AVG10_Int_Listing_Count = as.numeric(AVG10_Int_Listing_Count), 
+             Mass_kDa = as.numeric(Mass_kDa), Length_AA = as.numeric(Length_AA), 
+             pI = as.numeric(pI), Nb_Homologs = as.numeric(Nb_Homologs), 
+             Nb_RBP_Homologs = as.numeric(Nb_RBP_Homologs)) %>% 
+      select(-Entry_Name)
+    non_RBP_species<- readRDS(paste("Input/RBP2GO_RDS_Tables/table_",species,"_Non_Listed_Proteins.RDS", sep = "")) %>%
+      mutate(RBP2GO_Score = as.numeric(RBP2GO_Score), Nb_Datasets = as.numeric(Nb_Datasets), 
+             Listing_Count = as.numeric(Listing_Count), AVG10_Int_Listing_Count = as.numeric(AVG10_Int_Listing_Count), 
+             Mass_kDa = as.numeric(Mass_kDa), Length_AA = as.numeric(Length_AA), 
+             pI = as.numeric(pI), Nb_Homologs = as.numeric(Nb_Homologs), 
+             Nb_RBP_Homologs = as.numeric(Nb_RBP_Homologs))%>% 
+      select(-Entry_Name)
+    
+    # Then load the files downloaded manually with new UniProts IDs and the InterPro domain information
+    RBP_crossref<-read_excel(paste("Input/uniprot_list/",species,"_RBP_domains_crossref.xlsx", sep = ""), col_names = c("Uniprot_ID","Entry_Name", "Interpro_domains", "Pfam_domains"),skip=1)
+    non_RBP_crossref<-read_excel(paste("Input/uniprot_list/",species,"_non_RBP_domains_crossref.xlsx",sep = ""), col_names = c("Uniprot_ID","Entry_Name", "Interpro_domains", "Pfam_domains"),skip=1)
+    
+    # Here we need to update the UniProt IDs since some of them were deleted or split
+    # Take the table with the correspondence between old and new ids created in the previous step
+    IDs_convert <- read.csv("Input/Downloads/Old_new_uniprot_IDs.csv")
+    # The number of times the line should be repeated is calculated 
+    IDs_convert_RBP <- IDs_convert %>% group_by(old_id) %>%
+      summarise(old_id_row = grep(unique(old_id), RBP_species$Uniprot_ID), 
+                new_ids = list(new_id), 
+                each = ifelse(new_ids == "", 0, length(unlist(new_ids))))
+     
+    IDs_convert_non_RBP <- IDs_convert %>% group_by(old_id) %>%
+      summarise(old_id_row = grep(unique(old_id), non_RBP_species$Uniprot_ID),
+                new_ids = list(new_id), 
+                each = ifelse(new_ids == "", 0, length(unlist(new_ids)))) 
+    
+    # Verify if there are any IDs to split or delete, delete the old IDs and replace them if needed
+    
+    if (length(IDs_convert_RBP$old_id) > 0){
+      RBP_species_updated <- RBP_species %>% dplyr::slice(-IDs_convert_RBP$old_id_row)
+      for (x in 1:length(IDs_convert_RBP$old_id)) {
+        if (IDs_convert_RBP$each[x] > 0){
+          RBP_species_updated <- RBP_species %>% 
+            dplyr::slice(rep(IDs_convert_RBP$old_id_row[x], each = IDs_convert_RBP$each[x])) %>%
+            mutate(Uniprot_ID = unlist(IDs_convert_RBP$new_ids[x])) %>%
+            rbind(RBP_species_updated, .)
+        }
+      }
+    } else {RBP_species_updated <- RBP_species}
+    
+    if (length(IDs_convert_non_RBP$old_id) > 0){
+    non_RBP_species_updated <- non_RBP_species %>% 
+      dplyr::slice(-IDs_convert_non_RBP$old_id_row) 
+  
+      for (x in 1:length(IDs_convert_non_RBP$old_id)) { 
+        if (IDs_convert_non_RBP$each[x] > 0){
+          non_RBP_species_updated <- non_RBP_species %>% 
+            dplyr::slice(rep(IDs_convert_non_RBP$old_id_row[x], each = IDs_convert_non_RBP$each[x])) %>%
+            mutate(Uniprot_ID = unlist(IDs_convert_non_RBP$new_ids[x])) %>%
+            rbind(non_RBP_species_updated, .)
+        }
+      }
+    } else{non_RBP_species_updated <- non_RBP_species}
+    
+    # IDs that are now duplicated between RBPs and non-RBPs need to be removed from the non-RBPs
+    duplicates <- intersect(RBP_species_updated$Uniprot_ID, non_RBP_species_updated$Uniprot_ID)
+    non_RBP_species_updated <- non_RBP_species_updated %>% 
+      filter(!Uniprot_ID %in% duplicates)
+    
+    # Create the extended files for RBPs and non-RBPs
+    RBP_crossref <- RBP_species_updated %>% 
+      left_join(RBP_crossref, by = "Uniprot_ID") %>%
+      mutate(RBD_InterPro = find_RBDs(Interpro_domains,RBD_combined$InterPro_ID)) %>%
+      mutate(is_RBP=T) %>%
+      mutate(has_RBD= !RBD_InterPro=="" & !RBD_InterPro=="NA")
+    
+    # And save everything as .csv and .rds
+    RBP_crossref%>% write.csv(file = paste("Output/Extended_RBP2GO/",species,"_RBP_RBDs.csv", sep=""), row.names = F)
+    RBP_crossref%>% saveRDS(file = paste("Output/Extended_RBP2GO/",species,"_RBP_RBDs.rds", sep=""))
+    
+    non_RBP_crossref <-non_RBP_species_updated %>% 
+      left_join(non_RBP_crossref, by = "Uniprot_ID") %>%
+      mutate(RBD_InterPro = find_RBDs(Interpro_domains,RBD_combined$InterPro_ID)) %>%
+      mutate(is_RBP=F)  %>%
+      mutate(has_RBD= !RBD_InterPro=="" & !RBD_InterPro=="NA") 
+    
+    non_RBP_crossref%>% write.csv(file = paste("Output/Extended_RBP2GO/",species,"_non_RBP_RBDs.csv", sep=""), row.names = F)
+    non_RBP_crossref%>% saveRDS(file = paste("Output/Extended_RBP2GO/",species,"_non_RBP_RBDs.rds", sep=""))
+}
+
+# Finally remove original data tables
+rm(RBP_species)
+rm(non_RBP_species)
+rm(RBP_crossref)
+rm(non_RBP_crossref)
+```
+
+
+## 2.3. Creating RBD_stat files
+
+The RBD stat files contains information about the RBDs (RBP-hits, non-RBP-hits for InterPro IDs, average RBP2GO scores, etc...) for each species. The files can be found in the Output/Extended_RBP2GO folder.
+
+_Note: running this step may take a while (about 10 min)_
+```{r RBD_stat files creation, message=F, warning=FALSE, tidy=TRUE, results='hide'}
+
+# Start of cycle
+for (j in 1:length(species_list)) {
+  
+  species<-species_list[j]
+  
+  # Read the files created in the last step
+  RBP_ext_species<-readRDS(paste("Output/Extended_RBP2GO/",species,"_RBP_RBDs.rds", sep=""))
+  non_RBP_ext_species<-readRDS(paste("Output/Extended_RBP2GO/",species,"_non_RBP_RBDs.rds", sep=""))
+  
+  if (file.exists(paste("Output/Extended_RBP2GO/",species,"_RBD_stats.txt", sep=""))) {
+    
+    print(paste("Resaving for", species, sep = " "))
+    RBD_stats <- read.delim(paste("Output/Extended_RBP2GO/",species, "_RBD_stats.txt", sep=""))
+    
+    
+  } else {
+    
+   message(paste("calculating for", species, sep = " "))
+    
+    # For every InterPro ID, use the grepl_v function to calculate the number of hits in RBP, then in non-RBPs
+    RBD_stats <- RBD_combined %>% 
+      plyr::mutate(RBP_hit_InterPro=
+               grepl_v(RBD_combined$InterPro_ID,RBP_ext_species$RBD_InterPro,as_df = T)[,1:nrow(RBP_ext_species)] %>% apply(MARGIN =1,FUN=sum)) %>%
+      plyr::mutate(non_RBP_hit_InterPro=
+               grepl_v(RBD_combined$InterPro_ID,non_RBP_ext_species$RBD_InterPro,as_df = T)[,1:nrow(non_RBP_ext_species)] %>% apply(MARGIN =1,FUN=sum)) 
+    
+  
+  # Calculate InterPro means for the RBPs
+  mean_RBP2GO_score_v<-vector("numeric", length=length(RBD_stats$InterPro_ID))
+  for (i in 1:length(RBD_stats$InterPro_ID)){
+    x<-RBP_ext_species[c(grep(RBD_stats$InterPro_ID[i], RBP_ext_species$RBD_InterPro)),] %>% pull (RBP2GO_Score) %>% mean(na.rm=T)
+    mean_RBP2GO_score_v[i]<-x
+  }
+  
+  # Add the means in the RBD_stats file
+  RBD_stats<-RBD_stats %>% 
+    plyr::mutate(mean_RBP2GO_score_Interpro=mean_RBP2GO_score_v)
+  
+  # And do the same for the non-RBPs
+  mean_RBP2GO_score_nb_v<-vector("numeric", length=length(RBD_stats$InterPro_ID))
+  for (i in 1:length(RBD_stats$InterPro_ID)){
+    x<-non_RBP_ext_species[c(grep(RBD_stats$InterPro_ID[i], non_RBP_ext_species$RBD_InterPro)),] %>% pull (RBP2GO_Score) %>% mean(na.rm=T)
+    mean_RBP2GO_score_nb_v[i]<-x
+  }
+  
+  RBD_stats<-RBD_stats %>% 
+    plyr::mutate(mean_RBP2GO_score_nb_Interpro=mean_RBP2GO_score_nb_v)
+  
+  RBD_stats<-RBD_stats %>% 
+    plyr::mutate(combined_RBP2GO_mean_Interpro=
+             (((mean_RBP2GO_score_Interpro*RBP_hit_InterPro)+(mean_RBP2GO_score_nb_Interpro*non_RBP_hit_InterPro))/(RBP_hit_InterPro+non_RBP_hit_InterPro)))
+  } 
+  
+  write.csv(RBD_stats, paste("Output/Extended_RBP2GO/",species, "_RBD_stats.csv", sep=""), row.names = F)
+  saveRDS(RBD_stats, paste("Output/Extended_RBP2GO/",species, "_RBD_stats.rds", sep=""))
+}
+
+# Clear the working evironment to keep only the function and the species_list, which will be used later
+rm(list=ls()[! ls() %in% c("find_RBDs","grep_v", "grepl_v", "species_list")])
+```
+
+
+# 3. Creation of cross species RBD stats table
+
+The tables for all the species are compiled in order to proceed to the RBD selection.
+
+```{r cross species stats table creation, message=F, tidy=TRUE, warning=FALSE, results='hold'}
+# Load the table with all IDs and remove the InterPro IDs
+RBD_all_spec<-readRDS("Output/Extended_RBP2GO/Combined_RBD_list.rds") %>%
+  ungroup() %>%
+  select(c("InterPro_ID", "InterPro_name", "InterPro_type")) %>%
+  unique()
+
+for (j in 1:length(species_list)) {
+  
+  species<-species_list[j]  
+  
+  RBD_spec <- readRDS(paste("Output/Extended_RBP2GO/",species, "_RBD_stats.rds", sep="")) %>%
+    ungroup()%>%
+    dplyr::select(InterPro_ID, RBP_hit_InterPro,non_RBP_hit_InterPro) %>%
+    unique() %>%
+    plyr::mutate(Freq_ratio= ifelse(RBP_hit_InterPro==0,0,RBP_hit_InterPro/non_RBP_hit_InterPro)) 
+  colnames(RBD_spec)[2:length(colnames(RBD_spec))]<-paste(species, colnames(RBD_spec)[2:length(colnames(RBD_spec))], sep="_")
+  
+  RBD_all_spec<-left_join(RBD_all_spec, RBD_spec, by = "InterPro_ID")
+  
+}
+rm(RBD_spec)
+
+# Calculate the sum of RBP and non-RBP hits across species
+RBD_all_spec<- 
+  RBD_all_spec %>% 
+  plyr::mutate(sum_RBP_more_study=  ifelse(is.na(InterPro_ID) , 0 , 
+                                     (HS_RBP_hit_InterPro + MM_RBP_hit_InterPro + SC_RBP_hit_InterPro + DM_RBP_hit_InterPro))) %>%
+  plyr::mutate(sum_non_RBP_more_study=  ifelse(is.na(InterPro_ID) , 0 , 
+                                         (HS_non_RBP_hit_InterPro + MM_non_RBP_hit_InterPro + SC_non_RBP_hit_InterPro + DM_non_RBP_hit_InterPro)))  %>%
+  plyr::mutate(sum_RBP=  ifelse(is.na(InterPro_ID) , 0 , 
+                          (HS_RBP_hit_InterPro + MM_RBP_hit_InterPro + SC_RBP_hit_InterPro + DM_RBP_hit_InterPro + AT_RBP_hit_InterPro + CE_RBP_hit_InterPro + DaR_RBP_hit_InterPro + EC_RBP_hit_InterPro + LD_RBP_hit_InterPro + LM_RBP_hit_InterPro + PF_RBP_hit_InterPro + SaE_RBP_hit_InterPro + TB_RBP_hit_InterPro))) %>%
+  plyr::mutate(sum_non_RBP=  ifelse(is.na(InterPro_ID) , 0 , 
+                              (HS_non_RBP_hit_InterPro + MM_non_RBP_hit_InterPro + SC_non_RBP_hit_InterPro + DM_non_RBP_hit_InterPro + AT_non_RBP_hit_InterPro + CE_non_RBP_hit_InterPro + DaR_non_RBP_hit_InterPro + EC_non_RBP_hit_InterPro + LD_non_RBP_hit_InterPro + LM_non_RBP_hit_InterPro + PF_non_RBP_hit_InterPro + SaE_non_RBP_hit_InterPro + TB_non_RBP_hit_InterPro)))  
+
+RBD_all_spec %>%  saveRDS(file = "Output/Extended_RBP2GO/RBD_all_spec_InterPro_stats.rds")
+RBD_all_spec %>%  write.csv(file = "Output/Extended_RBP2GO/RBD_all_spec_InterPro_stats.csv")
+```
+
+
+# 4. Selection of RBDs based on experimental data
+
+## 4.1 Curation and selection of RBDs
+
+__Shortly, the selection had two steps:__  
+    __first, we removed domains that were:__  
+       emsp not present in any species, or  
+       emsp had on annotated InterPro entries, or  
+       emsp had redundant InterPro entries (in this case, there were more pfam entries for one InterPro entry, the first in the list was kept, the others removed)  
+    __in a second step, we applied three selection criteria (see manuscript for more information)__  
+     emsp   Selection 1: proteins that had a freq ratio > 1 in Human,  
+     emsp   Selection 2: proteins that had  freq ratio > 1 in at least two of the more studied species (MM, SC, DM) and were not present in Human
+     emsp   Selection 3: proteins that had a freq ratio > 1 in more than half of the remaining species and were not present in HS, MM, SC nor DM. 
+If any of the requirements above was met, the domain was selected.  
+
+```{r selection of the RBDs, message=F, tidy=TRUE, warning=FALSE, results='markup'}
+RBD_all_spec<- readRDS("Output/Extended_RBP2GO/RBD_all_spec_InterPro_stats.rds")
+
+# Curation 
+RBD_all_spec <-
+  RBD_all_spec %>% 
+  mutate(note= ifelse(is.na(InterPro_ID), "Removed, no InterPro ID", " ")) %>%
+  group_by(InterPro_ID) %>% mutate(groupcount=row_number()) %>% ungroup() %>%
+  mutate(note= ifelse(note==" " & groupcount>1 ,"Removed, repeated InterPro ID" , note)) %>% select(-groupcount) %>%
+  mutate(note= ifelse(note==" " & sum_RBP==0 & sum_non_RBP==0, "Removed, no hits in any species", note))
+
+RBD_all_spec %>% 
+  group_by(note) %>% summarise(n=n())
+
+# Filter for the remaining domains
+RBD_all_spec_sel<-
+  RBD_all_spec %>% filter(note==" ")
+
+
+# Selection 1
+RBD_all_spec_sel %>% filter(HS_Freq_ratio>1) %>% nrow()
+
+# Selection2
+RBD_all_spec_sel <-  
+  RBD_all_spec_sel %>% 
+  rowwise() %>%
+  mutate(Freq_count_in_MM_SC_DM = sum(c(MM_Freq_ratio >1, SC_Freq_ratio>1, DM_Freq_ratio>1))) %>%
+  mutate(Hit_count_in_MM_SC_DM = sum(MM_RBP_hit_InterPro>0 | MM_non_RBP_hit_InterPro>0 , SC_RBP_hit_InterPro>0 | SC_non_RBP_hit_InterPro>0 , DM_RBP_hit_InterPro>0 | DM_non_RBP_hit_InterPro>0 )) %>%
+  ungroup() %>% 
+  mutate(Freq_Hit_in_MM_SC_DM= ifelse(Freq_count_in_MM_SC_DM/Hit_count_in_MM_SC_DM=="NaN", 0, Freq_count_in_MM_SC_DM/Hit_count_in_MM_SC_DM))
+
+# Selection3
+RBD_all_spec_sel <-
+  RBD_all_spec_sel %>% 
+  rowwise() %>%
+  mutate(Freq_count_in_9 = sum(c_across(ends_with("ratio"))[5:13]>1)) %>% 
+  mutate(Hit_count_in_9 = sum(AT_RBP_hit_InterPro>0 | AT_non_RBP_hit_InterPro>0 ,
+                              CE_RBP_hit_InterPro>0 | CE_non_RBP_hit_InterPro>0 , 
+                              DaR_RBP_hit_InterPro>0 | DaR_non_RBP_hit_InterPro>0 ,
+                              EC_RBP_hit_InterPro>0 | EC_non_RBP_hit_InterPro>0 ,
+                              LD_RBP_hit_InterPro>0 | LD_non_RBP_hit_InterPro>0 , 
+                              LM_RBP_hit_InterPro>0 | LM_non_RBP_hit_InterPro>0 ,
+                              PF_RBP_hit_InterPro>0 | PF_non_RBP_hit_InterPro>0 ,
+                              SaE_RBP_hit_InterPro>0 | SaE_non_RBP_hit_InterPro>0 , 
+                              TB_RBP_hit_InterPro>0 | TB_non_RBP_hit_InterPro>0 )) %>%
+  mutate(Freq_Hit_in_9= ifelse(Freq_count_in_9/Hit_count_in_9=="NaN", 0, Freq_count_in_9/Hit_count_in_9)) %>%
+  ungroup() %>%
+  mutate(HS_hits = HS_RBP_hit_InterPro + HS_non_RBP_hit_InterPro, 
+         MM_SC_DM_hits = MM_RBP_hit_InterPro + MM_non_RBP_hit_InterPro +
+           SC_RBP_hit_InterPro + SC_non_RBP_hit_InterPro +
+           DM_RBP_hit_InterPro + DM_non_RBP_hit_InterPro)
+
+# Label domains by selection
+RBD_all_spec_sel <-
+  RBD_all_spec_sel %>% mutate(Selection= 
+                                ifelse(HS_Freq_ratio>1, "Selection1", ifelse(
+                                  HS_hits == 0 & Freq_Hit_in_MM_SC_DM >= 0.5, "Selection2", ifelse(
+                                    MM_SC_DM_hits ==  0 & Freq_Hit_in_9 >= 0.5, "Selection3", "Not selected"
+                                  )
+                                ))
+  )
+
+RBD_all_spec_sel %>% count(Selection)
+
+# Save the list of domains that are selected, and save the created tables
+
+RBD_all_spec_sel %>% filter(Selection != "Not selected") %>% saveRDS("Output/Extended_RBP2GO/RBD_selected.rds")
+RBD_all_spec_sel %>% filter(Selection != "Not selected") %>% write.csv("Output/Extended_RBP2GO/RBD_selected.csv")
+RBD_all_spec_sel %>% filter(Selection != "Not selected") %>% pull(InterPro_ID) %>% saveRDS("Output/Extended_RBP2GO/RBD_selected_ID_list.rds")
+RBD_all_spec_sel %>% saveRDS("Output/Extended_RBP2GO/RBD_curated_non_selected_included.rds")
+
+rm(list=ls()[! ls() %in% c("find_RBDs","grep_v", "grepl_v", "species_list")])
+```
+
+
+## 4.2. Searching for selected RBDs in the proteins
+
+We searched for the selected RBDs based on their InterPro IDs.  
+The selected RBDs of a protein will be shown in the RBD_InterPro column and the has_RBD column will be updated.
+
+```{r update files with selected RBDs, message=F, tidy=TRUE, warning=FALSE, results='hide'}
+# Load the list of selected RBDs
+RBD_sel<-readRDS("Output/Extended_RBP2GO/RBD_selected_ID_list.rds")
+list_uniprot_IDs <- list()
+
+for (j in 1:length(species_list)){
+  
+  species<-species_list[j]
+  
+  message(paste("working on ", species))
+  
+  species_RBP<-readRDS(paste("Output/Extended_RBP2GO/",species,"_RBP_RBDs.rds", sep=""))
+  
+  # Change the list of RBDs and the has_RBD column
+  species_RBP <-
+    species_RBP %>%
+    mutate(RBD_InterPro = find_RBDs(Interpro_domains,RBD_sel)) %>%
+    mutate(has_RBD = !RBD_InterPro=="" & !RBD_InterPro=="NA")
+  
+  species_RBP %>% saveRDS(paste("Output/Extended_RBP2GO/",species,"_RBP_RBDs.rds", sep=""))
+  species_RBP %>% write.csv(paste("Output/Extended_RBP2GO/",species,"_RBP_RBDs.csv", sep=""))
+  
+  species_non_RBP<-readRDS(paste("Output/Extended_RBP2GO/",species,"_non_RBP_RBDs.rds", sep=""))
+  species_non_RBP <-
+    species_non_RBP %>%
+    mutate(RBD_InterPro = find_RBDs(Interpro_domains,RBD_sel)) %>%
+    mutate(has_RBD = !RBD_InterPro=="" & !RBD_InterPro=="NA")
+  
+  species_non_RBP %>% saveRDS(paste("Output/Extended_RBP2GO/",species,"_non_RBP_RBDs.rds", sep=""))
+  species_non_RBP %>% write.csv(paste("Output/Extended_RBP2GO/",species,"_non_RBP_RBDs.csv", sep=""))
+  
+  # Create a list of all UniProt IDs over all species (it will be used to grep the protein2ipr.dat file from InterPro)
+  list_uniprot_IDs <- list_uniprot_IDs %>%
+    append(., species_RBP %>% 
+             pull(Uniprot_ID) %>% unique()) %>%
+    append(., species_non_RBP %>%
+             pull(Uniprot_ID) %>% unique())
+}
+
+write_delim(data.frame("Uniprot_ID" = unlist(list_uniprot_IDs)), "Input/data/List_all_prots.txt", quote = "none", escape = "double", col_names = F)
+```
+
+
+# 5. Calculation of the number of RBDs and the fraction content in RBD
+
+The information of the protein domains was downloaded from InterPro. The IDs of proteins containing an RBD were extracted from this file and saved in the Input/Downloads folder, in the all_prots_protein2ipr.csv file (the original file with the data from InterPro is too large to be handled by R). This file is then used to extract the number of RBDs, as well as the fraction of the protein they represent. The tables are saved separately and the data is saved in the RDS files, in the Output/Extended_RBP2GO folder. 
+
+```{r calculate number of RBDs, message=F, tidy=TRUE, warning=FALSE, results='markup'}
+list_RBDs <- readRDS("Output/Extended_RBP2GO/RBD_selected.rds")
+colnames(list_RBDs)[1] <- "Interpro_ID"
+
+# The length of all the proteins containing an RBD was downloaded on UniProt
+df_length <- read.csv("Input/Downloads/Length_prots.tsv", sep = "\t") %>%
+  dplyr::rename(Uniprot_ID = From, prot_length = Length) %>%
+  dplyr::select(Uniprot_ID, prot_length) %>%
+  unique(.)
+
+# Here we load the information from InterPro and filter only for the proteins of the database
+ipro <- read.csv("Input/Downloads/all_prots_protein2ipr.tsv", sep = "\t", header = F) %>%
+  filter(V1 %in% df_length$Uniprot_ID) 
+
+# The names of the columns are changed to be recognized by the bedmerge() function
+colnames(ipro) <- c("Uniprot_ID", "Interpro_ID", "name", "ID", "start", "end")
+ipro <- ipro %>% 
+  filter(Interpro_ID %in% list_RBDs$Interpro_ID)%>%
+  left_join(list_RBDs[, c(1, 3)]) 
+
+# Then we calculate the number of RBD per protein, taking only the selected RBDs
+# Calculate the number of repeats first
+df_RBDs_nb_rep <- ipro %>%
+  filter(InterPro_type == "Repeat") %>%
+  dplyr::rename(chrom = Interpro_ID) %>%
+  group_by(Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Interpro_ID = chrom, chrom = Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Uniprot_ID = chrom) 
+
+# Load the number of the other InterPro IDs
+df_RBDs_nb <- ipro %>%
+  filter(InterPro_type != "Repeat") %>%
+  dplyr::rename(chrom = Interpro_ID) %>%
+  group_by(Uniprot_ID) %>%
+  bed_merge(.) %>%
+  mutate(end = end-10) %>% # 10 residues are removed from each domain to avoid 
+                           # merging domains that are overlapping by less than 10 amino acids
+  rbind(df_RBDs_nb_rep) %>% # We add the coordinates of the merged repeats
+  dplyr::rename(Interpro_ID = chrom, chrom = Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Uniprot_ID = chrom) %>%
+  group_by(Uniprot_ID) %>%
+  dplyr::summarise(RBDs_nb = n()) 
+
+# And the number of each RBD per protein
+df_RBDs_nb_indiv <- ipro %>%
+  dplyr::rename(chrom = Interpro_ID) %>%
+  group_by(Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Interpro_ID = chrom) %>%
+  dplyr::count(Uniprot_ID, Interpro_ID) %>%
+  mutate(n = paste0("[", n, "]")) %>%
+  unite(Interpro_ID, n, col = "nb", sep = " ") %>%
+  group_by(Uniprot_ID) %>%
+  mutate(nb_RBDs_individual = paste(nb, collapse = ";")) %>%
+  select(-nb) %>%
+  unique()
+
+# Load the content fraction that the RBDs represent for each protein
+df_RBDs_cf <- ipro %>%
+  dplyr::rename(chrom = Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Uniprot_ID = chrom) %>%
+  left_join(., df_length, by = "Uniprot_ID") %>% 
+  dplyr::mutate(content_fraction = ((end-start+1)/prot_length)) %>%
+  group_by(Uniprot_ID) %>% # We group the data to calculate the content_fraction for each protein separately
+  dplyr::summarise(RBDs_content_fraction = sum(content_fraction))
+    
+# Combine all the calculated data together with the Extended_RBP2GO file previously created and save it
+for (species in species_list){
+  df_RBP <- readRDS(paste0("Output/Extended_RBP2GO/", species, "_RBP_RBDs.rds")) %>%
+    left_join(., df_RBDs_nb, by = "Uniprot_ID") %>%
+    left_join(., df_RBDs_cf, by = "Uniprot_ID") %>%
+    left_join(., df_RBDs_nb_indiv, by = "Uniprot_ID") 
+  df_RBP[is.na(df_RBP$RBDs_content_fraction), c("RBDs_nb", "RBDs_content_fraction")] <- 0
+  write.csv(df_RBP, paste0("Output/Extended_RBP2GO/", species, "_RBP_nb_RBDs.csv"))
+  saveRDS(df_RBP, paste0("Output/Extended_RBP2GO/",species,"_RBP_nb_RBDs.rds"))
+  
+  df_non_RBP <- readRDS(paste0("Output/Extended_RBP2GO/", species, "_non_RBP_RBDs.rds")) %>%
+    left_join(., df_RBDs_nb, by = "Uniprot_ID") %>%
+    left_join(., df_RBDs_cf, by = "Uniprot_ID") %>%
+    left_join(., df_RBDs_nb_indiv, by = "Uniprot_ID") 
+  df_non_RBP[is.na(df_non_RBP$RBDs_nb), c("RBDs_nb", "RBDs_content_fraction")] <- 0
+  write.csv(df_non_RBP, paste0("Output/Extended_RBP2GO/", species, "_non_RBP_nb_RBDs.csv"))
+  saveRDS(df_non_RBP, paste0("Output/Extended_RBP2GO/",species,"_non_RBP_nb_RBDs.rds"))
+}
+
+rm(list=ls()[! ls() %in% c("find_RBDs","grep_v", "grepl_v", "species_list")])
+```
+
+
+# 6. Selection of InterPro RNA-related family IDs (Rfam IDs)
+
+## 6.1. Finding the InterPro IDs in the proteins
+
+Here the steps are exactly the same as for the selection of the RBDs.
+
+```{r find RBDs in proteins across species, results='hide', message=F, warning=FALSE, tidy=TRUE}
+# This will take about 5 min
+
+# Read combined Rfam ID list
+Fam_IDs_combined <- readRDS("Output/Extended_RBP2GO/Combined_family_ID_list.rds") 
+
+# Find Rfam IDs in the list of proteins, and save them into a separate file
+for (j in 1:length(species_list)){
+  
+  species<- species_list[j]
+  
+    print(paste("finding Rfam IDs in", species))
+
+    RBP_crossref <- readRDS(paste0("Output/Extended_RBP2GO/", species, "_RBP_nb_RBDs.rds")) %>%
+      select(Uniprot_ID, Entry_Name, Interpro_domains)
+    non_RBP_crossref <- readRDS(paste0("Output/Extended_RBP2GO/", species, "_non_RBP_nb_RBDs.rds")) %>%
+      select(Uniprot_ID, Entry_Name, Interpro_domains)
+    
+    # Create the extended files for RBPs and non-RBPs
+    RBP_crossref <- RBP_crossref %>% 
+      mutate(Fam_ID_InterPro = find_RBDs(Interpro_domains,Fam_IDs_combined$InterPro_ID)) %>%
+      mutate(is_RBP=T) %>%
+      mutate(has_fam_ID= !Fam_ID_InterPro=="" & !Fam_ID_InterPro=="NA")
+    
+    RBP_species <-  readRDS(paste0("Output/Extended_RBP2GO/", species, "_RBP_nb_RBDs.rds")) %>%
+      left_join(RBP_crossref)
+    
+    RBP_species%>% saveRDS(file = paste("Output/Extended_RBP2GO/",species,"_RBP_fam_IDs.rds", sep=""))
+    
+    non_RBP_crossref <- non_RBP_crossref %>% 
+      mutate(Fam_ID_InterPro = find_RBDs(Interpro_domains,Fam_IDs_combined$InterPro_ID)) %>%
+      mutate(is_RBP=F) %>%
+      mutate(has_fam_ID= !Fam_ID_InterPro=="" & !Fam_ID_InterPro=="NA")
+    
+    non_RBP_species <-  readRDS(paste0("Output/Extended_RBP2GO/", species, "_non_RBP_nb_RBDs.rds")) %>%
+      left_join(non_RBP_crossref)
+    
+    non_RBP_species%>% saveRDS(file = paste("Output/Extended_RBP2GO/",species,"_non_RBP_fam_IDs.rds", sep=""))
+}
+
+rm(list=ls()[! ls() %in% c("find_RBDs","grep_v", "grepl_v", "species_list")])
+```
+
+
+## 6.2. Creating the file with number of hits for further selection
+
+```{r create RBD_stat files, message=F, warning=FALSE, tidy=TRUE, results='hide'}
+# This will take about 10 min
+Fam_IDs_combined <- readRDS("Output/Extended_RBP2GO/Combined_family_ID_list.rds") 
+
+# Start of cycle
+for (j in 1:length(species_list)) {
+  
+  species<-species_list[j]
+  
+  RBP_ext_species<-readRDS(paste("Output/Extended_RBP2GO/",species,"_RBP_fam_IDs.rds", sep=""))
+  non_RBP_ext_species<-readRDS(paste("Output/Extended_RBP2GO/",species,"_non_RBP_fam_IDs.rds", sep=""))
+  
+  if (file.exists(paste("Output/Extended_RBP2GO/",species,"_Fam_IDs_stats.txt", sep=""))) {
+    
+    print(paste("Resaving for", species, sep = " "))
+    Fam_IDs_stats <- read.delim(paste("Output/Extended_RBP2GO/",species, "_Fam_IDs_stats.txt", sep=""))
+    
+    
+  } else {
+    
+   message(paste("calculating for", species, sep = " "))
+  
+    # Let's create the stat file
+    Fam_IDs_stats <- Fam_IDs_combined %>% 
+      plyr::mutate(RBP_hit_InterPro=
+               grepl_v(Fam_IDs_combined$InterPro_ID,RBP_ext_species$Fam_ID_InterPro,as_df = T)[,1:nrow(RBP_ext_species)] %>% apply(MARGIN =1,FUN=sum)) %>%
+      plyr::mutate(non_RBP_hit_InterPro=
+               grepl_v(Fam_IDs_combined$InterPro_ID,non_RBP_ext_species$Fam_ID_InterPro,as_df = T)[,1:nrow(non_RBP_ext_species)] %>% apply(MARGIN =1,FUN=sum)) 
+  
+  # Calculating InterPro means  
+  mean_RBP2GO_score_v<-vector("numeric", length=length(Fam_IDs_stats$InterPro_ID))
+  for (i in 1:length(Fam_IDs_stats$InterPro_ID)){
+    x<-RBP_ext_species[c(grep(Fam_IDs_stats$InterPro_ID[i], RBP_ext_species$Fam_ID_InterPro)),] %>% pull (RBP2GO_Score) %>% mean(na.rm=T)
+    mean_RBP2GO_score_v[i]<-x
+  }
+  
+  Fam_IDs_stats<-Fam_IDs_stats %>% 
+    plyr::mutate(mean_RBP2GO_score_Interpro=mean_RBP2GO_score_v)
+  
+  mean_RBP2GO_score_nb_v<-vector("numeric", length=length(Fam_IDs_stats$InterPro_ID))
+  for (i in 1:length(Fam_IDs_stats$InterPro_ID)){
+    x<-non_RBP_ext_species[c(grep(Fam_IDs_stats$InterPro_ID[i], non_RBP_ext_species$Fam_ID_InterPro)),] %>% pull (RBP2GO_Score) %>% mean(na.rm=T)
+    mean_RBP2GO_score_nb_v[i]<-x
+  }
+  
+  Fam_IDs_stats<-Fam_IDs_stats %>% 
+    plyr::mutate(mean_RBP2GO_score_nb_Interpro=mean_RBP2GO_score_nb_v)
+  
+  Fam_IDs_stats<-Fam_IDs_stats %>% 
+    plyr::mutate(combined_RBP2GO_mean_Interpro=
+             (((mean_RBP2GO_score_Interpro*RBP_hit_InterPro)+(mean_RBP2GO_score_nb_Interpro*non_RBP_hit_InterPro))/(RBP_hit_InterPro+non_RBP_hit_InterPro)))
+  }
+
+  saveRDS(Fam_IDs_stats, paste("Output/Extended_RBP2GO/",species, "_fam_IDs_stats.rds", sep=""))
+}
+
+rm(list=ls()[! ls() %in% c("find_RBDs","grep_v", "grepl_v", "species_list")])
+```
+
+```{r creating the cross species stats table, message=F, tidy=TRUE, warning=FALSE, results='hold'}
+Fam_ID_all_spec <-readRDS("Output/Extended_RBP2GO/Combined_family_ID_list.rds") %>%
+  ungroup() %>%
+  select(c("InterPro_ID", "InterPro_name", "InterPro_type")) %>%
+  unique()
+
+for (j in 1:length(species_list)) {
+  
+  species<-species_list[j] 
+  
+  Fam_ID_spec<- readRDS(paste("Output/Extended_RBP2GO/",species, "_fam_IDs_stats.rds", sep="")) %>%
+    ungroup()%>%
+    dplyr::select(InterPro_ID, RBP_hit_InterPro,non_RBP_hit_InterPro) %>%
+    unique() %>%
+    plyr::mutate(Freq_ratio= ifelse(RBP_hit_InterPro==0,0,RBP_hit_InterPro/non_RBP_hit_InterPro)) 
+  colnames(Fam_ID_spec)[2:length(colnames(Fam_ID_spec))] <- paste(species, colnames(Fam_ID_spec)[2:length(colnames(Fam_ID_spec))], sep="_")
+  
+  Fam_ID_all_spec<-left_join(Fam_ID_all_spec, Fam_ID_spec, by = "InterPro_ID")
+}
+rm(Fam_ID_spec)
+
+# Calculate the sum of RBP and non-RBP hits across species
+Fam_ID_all_spec <- Fam_ID_all_spec %>% 
+  plyr::mutate(sum_RBP_more_study=  ifelse(is.na(InterPro_ID) , 0 , 
+                                     (HS_RBP_hit_InterPro + MM_RBP_hit_InterPro + SC_RBP_hit_InterPro + DM_RBP_hit_InterPro))) %>%
+  plyr::mutate(sum_non_RBP_more_study=  ifelse(is.na(InterPro_ID) , 0 , 
+                                         (HS_non_RBP_hit_InterPro + MM_non_RBP_hit_InterPro + SC_non_RBP_hit_InterPro + DM_non_RBP_hit_InterPro)))  %>%
+  plyr::mutate(sum_RBP=  ifelse(is.na(InterPro_ID) , 0 , 
+                          (HS_RBP_hit_InterPro + MM_RBP_hit_InterPro + SC_RBP_hit_InterPro + DM_RBP_hit_InterPro + AT_RBP_hit_InterPro + 
+                             CE_RBP_hit_InterPro + DaR_RBP_hit_InterPro + EC_RBP_hit_InterPro + LD_RBP_hit_InterPro + LM_RBP_hit_InterPro + 
+                             PF_RBP_hit_InterPro + SaE_RBP_hit_InterPro + TB_RBP_hit_InterPro))) %>%
+  plyr::mutate(sum_non_RBP=  ifelse(is.na(InterPro_ID) , 0 , 
+                              (HS_non_RBP_hit_InterPro + MM_non_RBP_hit_InterPro + SC_non_RBP_hit_InterPro + DM_non_RBP_hit_InterPro + AT_non_RBP_hit_InterPro + 
+                                 CE_non_RBP_hit_InterPro + DaR_non_RBP_hit_InterPro + EC_non_RBP_hit_InterPro + LD_non_RBP_hit_InterPro + LM_non_RBP_hit_InterPro + 
+                                 PF_non_RBP_hit_InterPro + SaE_non_RBP_hit_InterPro + TB_non_RBP_hit_InterPro)))  
+
+Fam_ID_all_spec %>%  saveRDS(file = "Output/Extended_RBP2GO/Fam_ID_all_spec_InterPro_stats.rds")
+rm(list=ls()[! ls() %in% c("find_RBDs","grep_v", "grepl_v", "species_list")])
+```
+
+
+## 6.3. Selection of the Rfam IDs enriched in the RBPs
+
+```{r selection of the fam IDs enriched in RBPs, message=F, warning=FALSE, tidy=TRUE, results='hide'}
+Fam_ID_spec<- readRDS("Output/Extended_RBP2GO/Fam_ID_all_spec_InterPro_stats.rds")
+
+# Curation 
+Fam_ID_spec <-Fam_ID_spec %>% 
+  mutate(note= ifelse(is.na(InterPro_ID), "Removed, no InterPro ID", " ")) %>%
+  group_by(InterPro_ID) %>% mutate(groupcount=row_number()) %>% ungroup() %>%
+  mutate(note= ifelse(note==" " & groupcount>1 ,"Removed, repeated InterPro ID" , note)) %>% select(-groupcount) %>%
+  mutate(note= ifelse(note==" " & sum_RBP==0 & sum_non_RBP==0, "Removed, no hits in any species", note))
+
+Fam_ID_spec %>% 
+  group_by(note) %>% summarise(n=n())
+
+# Filter for the remaining domains
+Fam_ID_spec_sel<-
+  Fam_ID_spec %>% filter(note==" ")
+
+# Selection 1
+Fam_ID_spec %>% filter(HS_Freq_ratio>1) %>% nrow()
+
+# Selection2
+Fam_ID_spec <-  
+  Fam_ID_spec %>% 
+  rowwise() %>%
+  mutate(Freq_count_in_MM_SC_DM = sum(c(MM_Freq_ratio >1, SC_Freq_ratio>1, DM_Freq_ratio>1))) %>%
+  mutate(Hit_count_in_MM_SC_DM = sum(MM_RBP_hit_InterPro>0 | MM_non_RBP_hit_InterPro>0 , SC_RBP_hit_InterPro>0 | SC_non_RBP_hit_InterPro>0 , DM_RBP_hit_InterPro>0 | DM_non_RBP_hit_InterPro>0 )) %>%
+  ungroup() %>% 
+  mutate(Freq_Hit_in_MM_SC_DM= ifelse(Freq_count_in_MM_SC_DM/Hit_count_in_MM_SC_DM=="NaN", 0, Freq_count_in_MM_SC_DM/Hit_count_in_MM_SC_DM))
+
+# Selection3
+Fam_ID_spec <-
+  Fam_ID_spec %>% 
+  rowwise() %>%
+  mutate(Freq_count_in_9 = sum(c_across(ends_with("ratio"))[5:13]>1)) %>% 
+  mutate(Hit_count_in_9 = sum(AT_RBP_hit_InterPro>0 | AT_non_RBP_hit_InterPro>0 ,
+                              CE_RBP_hit_InterPro>0 | CE_non_RBP_hit_InterPro>0 , 
+                              DaR_RBP_hit_InterPro>0 | DaR_non_RBP_hit_InterPro>0 ,
+                              EC_RBP_hit_InterPro>0 | EC_non_RBP_hit_InterPro>0 ,
+                              LD_RBP_hit_InterPro>0 | LD_non_RBP_hit_InterPro>0 , 
+                              LM_RBP_hit_InterPro>0 | LM_non_RBP_hit_InterPro>0 ,
+                              PF_RBP_hit_InterPro>0 | PF_non_RBP_hit_InterPro>0 ,
+                              SaE_RBP_hit_InterPro>0 | SaE_non_RBP_hit_InterPro>0 , 
+                              TB_RBP_hit_InterPro>0 | TB_non_RBP_hit_InterPro>0 )) %>%
+  mutate(Freq_Hit_in_9= ifelse(Freq_count_in_9/Hit_count_in_9=="NaN", 0, Freq_count_in_9/Hit_count_in_9)) %>%
+  ungroup() %>%
+  mutate(HS_hits = HS_RBP_hit_InterPro + HS_non_RBP_hit_InterPro, 
+         MM_SC_DM_hits = MM_RBP_hit_InterPro + MM_non_RBP_hit_InterPro +
+           SC_RBP_hit_InterPro + SC_non_RBP_hit_InterPro +
+           DM_RBP_hit_InterPro + DM_non_RBP_hit_InterPro)
+
+# Label Rfams ID by selection
+Fam_ID_spec <-
+  Fam_ID_spec %>% mutate(Selection= 
+                                ifelse(HS_Freq_ratio>1, "Selection1", ifelse(
+                                  HS_hits == 0 & Freq_Hit_in_MM_SC_DM >= 0.5, "Selection2", ifelse(
+                                    MM_SC_DM_hits ==  0 & Freq_Hit_in_9 >= 0.5, "Selection3", "Not selected"
+                                  )
+                                ))
+  )
+
+Fam_ID_spec %>% count(Selection)
+
+# Save the list of Rfam IDs that were selected and save the created tables
+
+Fam_ID_spec %>% filter(Selection != "Not selected") %>% saveRDS("Output/Extended_RBP2GO/Fam_IDs_selected.RDS")
+Fam_ID_spec %>% filter(Selection != "Not selected") %>% write.csv("Output/Extended_RBP2GO/Fam_IDs_selected.csv")
+```
+
+
+## 6.4. Update of the Extended_RBP2GO files
+
+```{r update of the files, results='hide', message=F, warning=FALSE, tidy=TRUE}
+
+Fam_ID_sel <- readRDS("Output/Extended_RBP2GO/Fam_IDs_selected.RDS") %>% pull(InterPro_ID) %>% unique()
+
+for (j in 1:length(species_list)){
+  
+  species<-species_list[j]
+  
+  message(paste("working on ", species))
+  
+  species_RBP<-readRDS(paste("Output/Extended_RBP2GO/",species,"_RBP_fam_IDs.rds", sep=""))
+  species_RBP <-
+    species_RBP %>%
+    mutate(Fam_ID_InterPro = find_RBDs(Interpro_domains,Fam_ID_sel)) %>%
+    mutate(has_fam_ID = !Fam_ID_InterPro=="" & !Fam_ID_InterPro=="NA")
+  
+  species_RBP %>% saveRDS(paste("Output/Extended_RBP2GO/",species,"_RBP_fam_IDs.rds", sep=""))
+  
+  non_species_RBP<-readRDS(paste("Output/Extended_RBP2GO/",species,"_non_RBP_fam_IDs.rds", sep=""))
+  non_species_RBP <-
+    non_species_RBP %>%
+    mutate(Fam_ID_InterPro = find_RBDs(Interpro_domains,Fam_ID_sel)) %>%
+    mutate(has_fam_ID = !Fam_ID_InterPro=="" & !Fam_ID_InterPro=="NA")
+  
+  non_species_RBP %>% saveRDS(paste("Output/Extended_RBP2GO/",species,"_non_RBP_fam_IDs.rds", sep=""))
+}
+rm(list=ls()[! ls() %in% c("find_RBDs","grep_v", "grepl_v", "species_list")])
+```
+
+
+# 7. Import dataset for analyzing disordered regions from MobiDB
+
+MobiDB is a database collecting the data from many other databases and algorithm, especially for disordered regions. Here we downloaded the consensus data from mobidb-lite, for the intrinsically disordered regions (IDRs)
+
+Be aware that the chunk below will last about 90 min!
+```{r mobidb data import, message=F, tidy = T, warning = F}
+# species_list: ("HS", "MM", "SC", "DM", "AT", "CE", "DaR/Dr", "EC", "LD", "LM", "PF", "SaE/ST","TB")
+# Taxon order: Hs (9606), Mm (10090), Sc (559292), Dm (7227), At (3702), Ce (6239), Dr (7955), Ec (83333), Ld (981087), Lm (929439), Pf (36329), ST (99287), Tb (185431)
+taxon_ID_list <- c("9606", "10090", "559292", "7227", "3702", "6239", "7955", "83333", "981087", "929439", "36329", "99287", "185431")
+condition_list <- c("RBP", "non_RBP")
+options(timeout=600)
+
+# Make the list of the feature we need to download
+list_features <- c("prediction-disorder-mobidb_lite", "prediction-coiled_coil-uniprot", "prediction-low_complexity-merge", 
+                   "prediction-cystein_rich-mobidb_lite_sub", "prediction-glycine_rich-mobidb_lite_sub", 
+                   "prediction-low_complexity-mobidb_lite_sub","prediction-negative_polyelectrolyte-mobidb_lite_sub", 
+                   "prediction-polar-mobidb_lite_sub","prediction-polyampholyte-mobidb_lite_sub", 
+                   "prediction-positive_polyelectrolyte-mobidb_lite_sub", "prediction-proline_rich-mobidb_lite_sub")
+features <- "acc,length"
+for (j in list_features){features <- paste(features, j, sep=",")}
+  
+# The data was downloaded from the mobiDB website on the 12.05.2022
+  
+# For (x in 1:length(species_list)) {
+#  species <- species_list[x]
+#  taxon_ID <- taxon_ID_list[x]
+#  download.file(paste0("https://mobidb.org/api/download?ncbi_taxon_id=",taxon_ID, "&projection=", features, "&format=tsv"), 
+#                destfile = paste0("Input/Downloads", species, "_mobidb_data.tsv"))
+#  }
+  
+for (species in species_list){  # Load the downloaded tsv file and search for the protein ID and the feature 
+  mobi_df <- read.csv2(paste0("Input/Downloads/", species, "_mobidb_data.tsv"), sep = "\t", header =T)
+  for (condition in condition_list){
+    
+    # Print some information about the dataset currently analysed
+    print(paste(species, condition, "dataset currently analysed."))
+    
+    # Load the Extended_RBP2GO file created in the previous step
+    df <- readRDS(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_fam_IDs.rds"))
+    
+    # Look for the IDs present in the mobidb file, i.e. the IDs that have at least one IDR domain
+    list_IDRs <- paste0("^",intersect(df$Uniprot_ID, mobi_df$acc),"$")
+      
+    # Create a new dataframe with the list of common IDs
+    df_IDRs <- mobi_df[unlist(lapply(list_IDRs, grep, mobi_df$acc)),]
+    
+    # Do the same to find the IDs which are not in the mobidb file, i.e. the IDs that don't have IDR domain
+    list_non_IDRs <- paste0("^",setdiff(df$Uniprot_ID, mobi_df$acc),"$")
+    df_non_IDRs <- data.frame(acc = df$Uniprot_ID[unlist(lapply(list_non_IDRs, grep, df$Uniprot_ID))])
+    
+    # Bind the two dataframes, filling the missing columns with NAs
+    df_mobidb <- plyr::rbind.fill(df_IDRs, df_non_IDRs)[,c(1,2,4)]
+    
+    # Keep the content fraction for each feature
+    df_mobidb <- df_mobidb %>%
+      transmute(., Uniprot_ID = acc, feature = feature, content_fraction = content_fraction) %>%
+      pivot_wider(., names_from = feature, values_from = content_fraction)
+    
+    # For each feature, verify that the column is there, otherwise just add a column with zeroes
+    for (x in 1:length(list_features)){
+      if (!(list_features[x] %in% colnames(df_mobidb))){
+        df_mobidb[, list_features[x]] <- rep(0, length(df_mobidb$Uniprot_ID))
+      }
+    }
+    
+    # Remove the NA column that was created
+    df_mobidb$'NA' <- NULL
+    df_mobidb$`prediction-low_complexity-mobidb_lite_sub` <- NULL
+    
+    # Replace the names of the columns
+    df_mobidb <- df_mobidb %>%
+      dplyr::rename(c("IDR_content_fraction" = "prediction-disorder-mobidb_lite", 
+               "IDR_positive-polyelectrolyte_content_fraction" = "prediction-positive_polyelectrolyte-mobidb_lite_sub", 
+               "IDR_polyampholyte_content_fraction" = "prediction-polyampholyte-mobidb_lite_sub", 
+               "IDR_glycine-rich_content_fraction" = "prediction-glycine_rich-mobidb_lite_sub", 
+               "IDR_polar_content_fraction" = "prediction-polar-mobidb_lite_sub", 
+               "IDR_proline-rich_content_fraction" = "prediction-proline_rich-mobidb_lite_sub", 
+               "IDR_cystein-rich_content_fraction" = "prediction-cystein_rich-mobidb_lite_sub",
+               "LCD_content_fraction" = "prediction-low_complexity-merge", 
+               "coiled_coil_content_fraction" = "prediction-coiled_coil-uniprot", 
+               "IDR_negative-polyelectrolyte_content_fraction" = "prediction-negative_polyelectrolyte-mobidb_lite_sub"))
+    df_mobidb[, -1] <- lapply(df_mobidb[, -1], as.numeric)
+    
+    # Replace all the NAs (no region) by 0
+    df_mobidb[is.na(df_mobidb)] <-  0
+    
+    # Add columns to have the status of each feature
+    df_mobidb <- df_mobidb %>%
+      mutate(., IDR_status = ifelse(IDR_content_fraction == 0, "no_IDR", "IDR"), 
+             LCD_status = ifelse(LCD_content_fraction == 0, "no_LCD", "LCD"), 
+             coiled_coil_status = ifelse(coiled_coil_content_fraction == 0, "no_coiled_coil", "coiled_coil"))
+    
+    # Join the dataframe with the already existing data
+    df_final <- full_join(df, df_mobidb, by = "Uniprot_ID")
+    colnames(df_final)[colnames(df_final) == "is_RBP"] <- "RBP_status"
+    df_final$RBP_status <- condition
+    colnames(df_final)[colnames(df_final) == "has_RBD"] <- "RBD_status"
+    df_final$RBD_status <- ifelse(df_final$RBD_status == T, "RBD", "no_RBD")
+    
+    # Save the dataframe in the mobidb folder
+    write.csv2(df_final, file = paste0("Output/Extended_RBP2GO/", species, "_", condition, "_IDRs.csv"))
+    saveRDS(df_final, paste0("Output/Extended_RBP2GO/",species,"_", condition, "_IDRs.rds"))
+    rm(df_mobidb)
+    rm(df)
+    rm(df_final)
+  }
+  rm(mobi_df)
+}
+```
+
+
+# 8. Sanity check
+
+Here we verify the different .rds files written in the previous steps, to ensure that the number of proteins remained the same for all species, and that no data was lost. 
+Then we verify the number of proteins with the different features, to verify if any NAs were introduced, in the last generated file.
+
+```{r verify number of proteins, message=F, tidy=TRUE, warning=FALSE, results='markup'}
+check_rds <- data.frame(Species = rep("", 27))
+
+c <- 1
+for (species in species_list){
+  for (condition in condition_list){
+    check_rds$Species[c] <- species
+    check_rds$Condition[c] <- condition
+    check_rds$rds_1[c] <- readRDS(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_RBDs.rds"))$Uniprot_ID %>% length()
+    check_rds$rds_2[c] <- readRDS(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_IDRs.rds"))$Uniprot_ID %>% length()
+    check_rds$rds_3[c] <- readRDS(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_nb_RBDs.rds"))$Uniprot_ID %>% length()
+    check_rds$rds_4[c] <- readRDS(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_fam_IDs.rds"))$Uniprot_ID %>% length()
+    check_rds$nb_NA_score[c] <- readRDS(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_fam_IDs.rds"))$RBP2GO_score %>%
+                            is.na()%>% 
+                            sum()
+    check_rds$nb_NA[c] <- readRDS(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_fam_IDs.rds"))$IDR_content_fraction %>%
+                            is.na()%>% 
+                            sum()
+    c <- c+1
+  }
+}
+
+# Add another column to verify if the number of proteins are the same for all the species for all the rds files --> TRUE means the values are the same
+
+check_rds$check <- all(sapply(list(check_rds$rds_1, check_rds$rds_2, check_rds$rds_3, check_rds$rds_4), function(x) x == check_rds$rds_1))
+check_rds <- t(check_rds) %>% 
+  data.frame() %>%
+  rbind(rep(NA, 27))
+colnames(check_rds) <- c(1:15)
+
+# For the rest of the sanity check, we will need to generate one big file with all data
+df_all <- data.frame()
+for (species in species_list){
+  for (condition in condition_list){
+    data <- readRDS(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_IDRs.rds")) %>%
+      select(Uniprot_ID, Entry_Name, RBP_status, RBD_status, RBDs_nb, RBDs_content_fraction, has_fam_ID, IDR_status, IDR_content_fraction, Interpro_domains) %>%
+      mutate(Species = species, fam_ID_status = ifelse(has_fam_ID, "Fam_ID", "No_fam_ID"))
+    df_all <- rbind(df_all, data) %>%
+      data.frame()
+    rm(data)
+  }
+}
+
+# We can then perform the sanity check on the RBDs
+list_RBDs <- readRDS("Output/Extended_RBP2GO/Combined_RBD_list.rds") %>% pull(InterPro_ID) %>% unique()
+list_fam_IDs <- readRDS("Output/Extended_RBP2GO/Combined_family_ID_list.rds") %>% pull(InterPro_ID) %>% unique()
+list_RBDs_sel <- readRDS("Output/Extended_RBP2GO/RBD_selected.rds") %>% pull(InterPro_ID) %>% unique()
+list_fam_IDs_sel <- readRDS("Output/Extended_RBP2GO/Fam_IDs_selected.RDS") %>% pull(InterPro_ID) %>% unique()
+
+# Separate the list of InterPro IDs to have on ID per line
+domains <- df_all %>%
+  select(Species, Interpro_domains) %>%
+  separate_rows(Interpro_domains, sep = ";") %>%
+  filter(Interpro_domains != "") %>%
+  unique()
+
+# Then count the IDs for the different steps of the analysis, 
+# using the lists previously loaded
+check_domains <- domains %>%
+  count(Species) %>%
+  dplyr::rename(all_IDs = n) %>%
+  left_join(domains %>%
+              filter(Interpro_domains %in% list_RBDs) %>%
+              count(Species) %>%
+              dplyr::rename(RBDs = n)) %>%
+  left_join(domains %>%
+              filter(Interpro_domains %in% list_RBDs_sel) %>%
+              count(Species) %>%
+              dplyr::rename(RBDs_sel = n))%>%
+  left_join(domains %>%
+              filter(Interpro_domains %in% list_fam_IDs) %>%
+              count(Species) %>%
+              dplyr::rename(fam_IDs = n))%>%
+  left_join(domains %>%
+              filter(Interpro_domains %in% list_fam_IDs_sel) %>%
+              count(Species) %>%
+              dplyr::rename(fam_IDs_sel = n)) %>%
+  pivot_longer(cols = 2:6, names_to = "type") %>% 
+  pivot_wider(values_from = "value", names_from = "Species") %>%
+  relocate(species_list, .after = "type")
+check_domains <- rbind(colnames(check_domains), check_domains) %>%
+  rbind(rep(NA, 15))
+colnames(check_domains) <- c(1:15)
+
+# We also need to verify the number of all subcategories that were created, to see if the numbers add up and if any NA were generated
+RBD_status <- df_all %>% count(Species, RBP_status, RBD_status) %>%
+  pivot_wider(names_from = Species, values_from = n) %>%
+  relocate(species_list, .after = "RBD_status") %>%
+  adorn_totals() %>%
+  as.data.frame(col.names = NULL)
+RBD_status <- rbind(colnames(RBD_status), RBD_status)%>%
+  rbind(rep(NA, 15))
+colnames(RBD_status) <- c(1:15)
+
+nb_RBDs <- df_all %>%
+  mutate(RBD_status = ifelse(is.na(RBDs_nb), "NA",
+                             ifelse(RBDs_nb>0, "RBDs > 0", "RBDs_nb = 0" ))) %>%
+  count(Species, RBP_status, RBD_status) %>%
+  pivot_wider(names_from = Species, values_from = n) %>%
+  relocate(species_list, .after = "RBD_status") %>%
+  adorn_totals()
+nb_RBDs <- rbind(colnames(nb_RBDs), nb_RBDs)%>%
+  rbind(rep(NA, 15))
+colnames(nb_RBDs) <- c(1:15)
+
+cf_RBDs <- df_all %>%
+  mutate(RBD_status = ifelse(is.na(RBDs_content_fraction), "NA",
+                             ifelse(RBDs_content_fraction>0, "RBDs > 0", "RBDs_nb = 0" ))) %>%
+  count(Species, RBP_status, RBD_status) %>%
+  pivot_wider(names_from = Species, values_from = n) %>%
+  relocate(species_list, .after = "RBD_status") %>%
+  adorn_totals()
+cf_RBDs <- rbind(colnames(cf_RBDs), cf_RBDs)%>%
+  rbind(rep(NA, 15))
+colnames(cf_RBDs) <- c(1:15)
+
+IDR_status <- df_all %>% count(Species, RBP_status, IDR_status) %>%
+  pivot_wider(names_from = Species, values_from = n) %>%
+  relocate(species_list, .after = "IDR_status") %>%
+  adorn_totals()
+IDR_status <- rbind(colnames(IDR_status), IDR_status)%>%
+  rbind(rep(NA, 15))
+colnames(IDR_status) <- c(1:15)
+
+cf_IDRs <- df_all %>%
+  mutate(IDR_status = ifelse(is.na(IDR_content_fraction), "NA",
+                             ifelse(IDR_content_fraction>0, "IDR", "no_IDR" ))) %>% 
+  count(Species, RBP_status, IDR_status) %>%
+  pivot_wider(names_from = Species, values_from = n) %>%
+  relocate(species_list, .after = "IDR_status") %>%
+  adorn_totals()
+cf_IDRs <- rbind(colnames(cf_IDRs), cf_IDRs)%>%
+  rbind(rep(NA, 15))
+colnames(cf_IDRs) <- c(1:15)
+
+fam_ID_status <- df_all %>% count(Species, RBP_status, fam_ID_status) %>%
+  pivot_wider(names_from = Species, values_from = n) %>%
+  relocate(species_list, .after = "fam_ID_status") %>%
+  adorn_totals()
+fam_ID_status <- rbind(colnames(fam_ID_status), fam_ID_status)%>%
+  rbind(rep(NA, 15))
+colnames(fam_ID_status) <- c(1:15)
+
+# The tables are then compiled and saved in a tsv file
+sanity_check <- bind_rows(check_rds, check_domains, RBD_status, nb_RBDs, cf_RBDs, IDR_status, cf_IDRs, fam_ID_status)
+write.table(sanity_check, "Output/Extended_RBP2GO/Sanity_check.tsv", na= "", sep = "\t", col.names = F, row.names = T)
+
+rm(list=ls()[! ls() %in% c("species_list", "condition_list")])
+```
+
+
+# 9. Update of the files
+
+Once the sanity check was passed, all the intermediary files can be removed and the IDRs file kept and renamed as the final file for all species and all conditions
+
+```{r update of the generated files, message = F, tidy = T, warning = F}
+for (species in species_list){
+  for (condition in condition_list){
+    readRDS(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_IDRs.rds")) %>%
+      saveRDS(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_extended.rds"))
+    file.remove(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_RBDs.rds"))
+    file.remove(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_nb_RBDs.rds"))
+    file.remove(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_fam_IDs.rds"))
+    file.remove(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_IDRs.rds"))
+    read.csv2(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_IDRs.csv")) %>%
+      write.csv2(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_extended.csv"))
+    file.remove(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_RBDs.csv"))
+    file.remove(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_nb_RBDs.csv"))
+    file.remove(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_fam_IDs.csv"))
+    file.remove(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_IDRs.csv"))
+  }
+}
+
+rm(list = ls())
+```
+
+
+# 10. GO analysis of non-RBPs with RBDs as compared to the whole proteome
+
+```{r go enrichment analysis, message = F, tidy = T, warning = F}
+# This step will last about 10 min
+# In case of troubles to run it, it is possible to perform the enrichment analysis directly on the panther webpage under https://pantherbd.org
+# The files found in our Output/GO_enrichment/ folder were compiled on April 6th 2023.
+
+# Download the background data from Panther database (genome and database annotations)
+
+#fromJSON("http://pantherdb.org/services/oai/pantherdb/supportedgenomes")$search$output$genomes$genome %>%
+#  saveRDS("Input/Downloads/Panther_genome_info.rds")
+
+genomeinfo <- readRDS("Input/Downloads/Panther_genome_info.rds")
+
+#fromJSON("http://pantherdb.org/services/oai/pantherdb/supportedannotdatasets")$search$annotation_data_sets$annotation_data_type%>%
+#  saveRDS("Input/Downloads/Panther_anno_datasets.rds")
+
+annodatasets <- readRDS("Input/Downloads/Panther_anno_datasets.rds")
+
+species_list<-c("HS", "MM", "SC", "DM", "AT", "CE", "DaR", "EC", "LD", "LM", "PF", "SaE","TB")
+
+species_info<-
+  data.frame(species=species_list, 
+             shortname=c("HUMAN", "MOUSE", "YEAST", "DROME", "ARATH", "CAEEL", "DANRE", "ECOLI", 
+                         "-", "-", "PLAF7", "SALTY", "TRYB2")) %>% 
+  left_join(select(genomeinfo, short_name, taxon_id), by=c("shortname"="short_name"))
+
+dataset_info<-
+  annodatasets[1:3, 3:4] %>%
+  mutate(id_html=gsub(pattern = ":", replacement = "%A", id))
+
+# Perform the enrichment analysis for each species separately
+for (j in 1:length(species_list)){
+  species<-species_list[j]
+  
+  message(paste("working on", species))
+  
+  
+  if (!is.na(species_info[j, "taxon_id"])){
+    
+    species_ID<-
+      as.numeric(species_info[j, "taxon_id"]) # From genomeinfo
+    
+    datasetType<-
+      dataset_info[1, "id"] # From annodatasets (1=MF, 2=BP, 3=CC)
+    
+    species_non_RBP<-readRDS(paste("Output/Extended_RBP2GO/",species ,"_non_RBP_extended.rds", sep=""))
+    species_RBP <- readRDS(paste("Output/Extended_RBP2GO/",species ,"_RBP_extended.rds", sep=""))
+    
+    genes<-species_non_RBP %>% filter(RBD_status=="RBD") %>% pull(Uniprot_ID)
+    
+    ref<-unlist(c(species_non_RBP$Uniprot_ID, species_RBP$Uniprot_ID))
+    
+    message("Sleeping for 30 seconds to avoid overusing server")
+    Sys.sleep(30)
+    
+    enrichment_MF<- 
+      rba_panther_enrich(genes = genes,
+                         organism = species_ID,
+                         annot_dataset = datasetType,
+                         ref_genes = ref,
+                         ref_organism = species_ID,
+                         cutoff = 0.9
+      )$result
+    
+    
+    enrichment_MF %>% saveRDS(paste("Output/GO_enrichment/", species, "_MF_enrichment_whole_proteome.rds", sep = ""))
+    enrichment_MF %>% write.csv(paste("Output/GO_enrichment/", species, "_MF_enrichment_whole_proteome.csv", sep = ""), row.names = F)
+    
+    datasetType<-
+      dataset_info[2, "id"] # From annodatasets (1=MF, 2=BP, 3=CC)
+    enrichment_BP<- 
+      rba_panther_enrich(genes = genes,
+                         organism = species_ID,
+                         annot_dataset = datasetType,
+                         ref_genes = ref,
+                         ref_organism = species_ID,
+                         cutoff = 0.9
+      )$result
+    
+    enrichment_BP %>% saveRDS(paste("Output/GO_enrichment/", species, "_BP_enrichment_whole_proteome.rds", sep = ""))
+    enrichment_BP %>% write.csv(paste("Output/GO_enrichment/", species, "_BP_enrichment_whole_proteome.csv", sep = ""), row.names = F)
+    
+  }
+}
+
+# Here create a cross species GO enrichment list
+
+for (j in 1:length(species_list)){
+  species<-species_list[j]
+  
+  if (!is.na(species_info[j, "taxon_id"]) & !species== "SaE"){
+    
+    species_enrichment_MF<-
+      readRDS(paste("Output/GO_enrichment/", species, "_MF_enrichment_whole_proteome.rds", sep = "")) %>%
+      select(term.id, term.label, fold_enrichment, fdr) %>%
+      `colnames<-`(c("term", "term_label", paste(species, "_fold_enrichment", sep=""),  paste(species, "_fdr", sep="")))
+     species_enrichment_BP<-
+      readRDS(paste("Output/GO_enrichment/", species, "_BP_enrichment_whole_proteome.rds", sep = "")) %>%
+      select(term.id, term.label, fold_enrichment, fdr) %>%
+      `colnames<-`(c("term", "term_label", paste(species, "_fold_enrichment", sep=""),  paste(species, "_fdr", sep="")))
+    
+    if(j==1){
+      
+      MF_combined<- species_enrichment_MF
+      BP_combined <- species_enrichment_BP
+    } else {
+      MF_combined<-
+        full_join(MF_combined,
+          species_enrichment_MF)
+      BP_combined<-
+        full_join(BP_combined,
+          species_enrichment_BP)
+    }
+  }
+}
+
+# Make column with the species with this term enriched
+MF_combined$enriched_in<-
+  rowSums(MF_combined %>% select(contains("fdr"))< 0.05, na.rm = T)
+
+# Calculate the average enrichment for these species
+MF_combined$average_enrichment<-
+  rowMeans(MF_combined %>% select(contains("fold")), na.rm = T)
+
+MF_combined<-
+  MF_combined %>% arrange(desc(average_enrichment), desc(enriched_in))
+
+saveRDS(MF_combined, "Output/GO_enrichment/combined_MF_list_whole_proteome.rds")
+
+# Do the same for the BP GO terms
+BP_combined$enriched_in<-
+  rowSums(BP_combined %>% select(contains("fdr"))< 0.05, na.rm = T)
+
+BP_combined$average_enrichment<-
+  rowMeans(BP_combined %>% select(contains("fold")), na.rm = T)
+
+BP_combined<-
+  BP_combined %>% arrange(desc(average_enrichment), desc(enriched_in))
+
+saveRDS(BP_combined, "Output/GO_enrichment/combined_BP_list_whole_proteome.rds")
+
+rm(list = ls())
+```
+
+
+# 11. Discovery of new RBDs in RBPs with no RBDs but with a high RBP2GO score 
+
+## 11.1. Enrichment analysis of InterPro IDs present in the RBPs with no RBDs but with a high RBP2GO score
+
+Here we determine which InterPro IDs are enriched in the RBPs with no RBDs but a high RBP2GO score. We compare this selection to three datasets of reference: the whole proteome, the non-RBPs with no RBD and the RBPs with no RBDs but with a low RBP2GO score. 
+
+```{r domains enrichment analysis, message = F, tidy = T, warning = F}
+# Here we will investigate the InterPro domains most present in the RBPs with a high RBP2GO score and no RBD
+
+species_list<-c("HS", "MM", "SC", "DM", "AT", "CE", "PF", "EC", "DaR","TB", "SaE", "LM", "LD")
+condition_list <- c("RBP", "non_RBP") 
+list_all_RBDs <- read.csv("Output/Extended_RBP2GO/Combined_RBD_list.csv")$InterPro_ID
+ID_type <- "InterPro"
+percent <- 0.2
+
+list_RBDs <- read.csv("Output/Extended_RBP2GO/RBD_selected.csv", sep = ",") 
+list_RBDs <- list_RBDs %>%
+  select(paste0(ID_type, "_ID")) %>%
+  unlist(.)
+list_RBDs <- list_RBDs[!(is.na(list_RBDs))]
+
+df_domain_ipro <- read.csv("Input/Downloads/InterPro_entries.list.tsv", sep = "\t", header = T) %>%
+  filter(ENTRY_TYPE %in% c("Domain", "Repeat"))
+
+list_IDs_domain <- df_domain_ipro %>%
+  select(ENTRY_AC) %>%
+  unlist(., use.names = F)
+
+domain_type <- paste0(ID_type, "_domains")
+
+# Create a dataframe with the needed columns
+df_all <- data.frame()
+for (species in species_list) {
+  for (condition in condition_list) {
+    # Load the corresponding .csv file
+    data <- readRDS(file = paste0("Output/Extended_RBP2GO/", species, "_", condition, "_extended.rds"))
+    # Remove the columns that are not used
+    df <- data %>% 
+      select(., Uniprot_ID, Interpro_domains, RBP_status, RBD_status, RBP2GO_Score)
+    df$Species <- species
+    df_all <- rbind(df_all, df)
+    rm(df)
+  }
+}
+
+df_all$RBP2GO_Score <- as.numeric(df_all$RBP2GO_Score)
+colnames(df_all)[2] <- "domains"
+
+# Calculate the number of proteins in which the domain is present (pst) and the number of proteins in which the domain is absent (abt)
+df_proteome <- df_all[!(is.na(df_all$RBP2GO_Score)) & df_all$Species == "HS",] %>%
+  tidyr::separate_rows(., domains, sep = ";") 
+
+prots_high <- df_all[!(is.na(df_all$RBP2GO_Score)) & df_all$Species == "HS",] %>%
+  filter(., RBP_status == "RBP" & RBD_status == "no_RBD") %>% 
+  top_frac(percent, RBP2GO_Score) %>%
+  select(Uniprot_ID) %>% 
+  unique()%>%
+  unlist()
+
+prots_low <- df_all[!(is.na(df_all$RBP2GO_Score)) & df_all$Species == "HS",] %>%
+  filter(., RBP_status == "RBP" & RBD_status == "no_RBD") %>% 
+  top_frac(-percent, RBP2GO_Score) %>%
+  select(Uniprot_ID) %>% 
+  unique()%>%
+  unlist()
+
+nb_non_RBPs_no_RBD <- df_all[!(is.na(df_all$RBP2GO_Score)) & df_all$Species == "HS",] %>%
+  filter(RBP_status == "non_RBP" & RBD_status == "no_RBD") %>%
+  unique() %>%
+  pull(Uniprot_ID) %>%
+  length()
+
+# Count the number of proteins containing each domain in each of the different datasets
+count_interest <- df_proteome %>%
+  group_by(domains) %>%
+  mutate(total_domain = n()) %>%
+  ungroup() %>%
+  # Select the top x% of the proteins based on the RBP2GO score (x = percent as defined above)
+  filter(., RBP_status == "RBP" & RBD_status == "no_RBD" & Uniprot_ID %in% prots_high) %>%
+  mutate(total_interest_prots = n_distinct(Uniprot_ID)) %>%
+  group_by(domains) %>%
+  # Finally select the columns we calculated and calculate the frequencies as well as the enrichment
+  select(domains, total_interest_prots) %>%
+  summarise(pst.interest = n(), abt.interest = total_interest_prots-n()) %>%
+  unique(.) 
+
+count_proteome <- df_proteome %>%
+  mutate(total_prots = n_distinct(Uniprot_ID)) %>%
+  group_by(domains) %>%
+  summarise(pst.proteome = n(), abt.proteome = total_prots-n()) %>%
+  unique(.) %>% 
+  right_join(., count_interest)
+
+count_low_score <- df_proteome %>%
+  filter(RBP_status == "RBP" & RBD_status == "no_RBD" & Uniprot_ID %in% prots_low) %>%
+  mutate(total_prots_low_score = n_distinct(Uniprot_ID)) %>%
+  group_by(domains) %>%
+  summarise(pst.low_score = n(), abt.low_score = total_prots_low_score-n()) %>%
+  unique(.)%>%
+  right_join(., count_proteome) %>%
+  mutate(pst.low_score = tidyr::replace_na(pst.low_score, 0), 
+         abt.low_score = tidyr::replace_na(abt.low_score, length(prots_low)))
+
+count_non_RBP_no_RBD <- df_proteome %>%
+  filter(RBP_status == "non_RBP" & RBD_status == "no_RBD") %>%
+  mutate(total_prots_non_RBP_no_RBD = n_distinct(Uniprot_ID)) %>%
+  group_by(domains) %>%
+  dplyr::summarise(pst.non_RBP_no_RBD = n(), abt.non_RBP_no_RBD= total_prots_non_RBP_no_RBD-n()) %>%
+  unique(.) %>%  
+  right_join(., count_low_score) %>%
+  mutate(pst.non_RBP_no_RBD = tidyr::replace_na(pst.non_RBP_no_RBD, 0), 
+         abt.non_RBP_no_RBD = tidyr::replace_na(abt.non_RBP_no_RBD, nb_non_RBPs_no_RBD))
+
+# Then add these data to the whole_proteome dataframe and pivot it to calculate a Fisher's exact test
+df_enrichments <- count_non_RBP_no_RBD %>%
+  filter(domains %in% list_IDs_domain) %>% 
+  pivot_longer(., cols = matches(c("pst.", "abt.")), 
+               names_to = "name", values_to = "count") %>%
+  separate(col = "name", into = c("type", "dataset"), sep = "\\.") %>%
+  pivot_wider(names_from = "dataset", values_from = "count") %>%
+  pivot_longer(cols = -c("domains", "type", "interest"), values_to = "reference", names_to = "dataset") %>%
+  group_by(domains, dataset) %>%
+  mutate(p_value = fisher.test(data.frame(list(interest), list(reference)))$p.value)
+
+# Adjust the p-values, due to multiple testing
+df_enrichments$p_adj <- p.adjust(df_enrichments$p_value, method = "fdr") 
+
+# And calculate the enrichment
+df_enrichments <- df_enrichments %>%
+  pivot_longer(cols = c("interest", "reference"), names_to = "type2", values_to = "count") %>%
+  pivot_wider(names_from = "type", values_from = "count") %>%
+  mutate(freq = pst/(pst+abt)) %>%
+  select(-c("pst", "abt")) %>%
+  pivot_wider(names_from = "type2", values_from = "freq") %>%
+  mutate(enrichment = interest/reference) %>%
+  select(domains, dataset, p_adj, p_value, enrichment, interest, reference) %>%
+  filter(!(domains %in% list_all_RBDs)) %>%
+  group_by(domains) %>%
+  arrange(desc(enrichment))
+
+df_enrichments$interest <- as.numeric(df_enrichments$interest)
+summary(df_enrichments)
+
+# Load the number of enriched domains
+length(unique(df_enrichments$domains))
+
+# For the selection, we also need to calculate the freq_ratio for each ID
+df_HS_ratio <- readRDS("Output/Extended_RBP2GO/HS_RBP_extended.rds") %>%
+  select(Uniprot_ID, Interpro_domains, RBP_status) %>%
+  rbind(readRDS("Output/Extended_RBP2GO/HS_non_RBP_extended.rds") %>%
+          select(Uniprot_ID, Interpro_domains, RBP_status)) %>%
+  separate_rows(Interpro_domains, sep = ";") %>%
+  filter(Interpro_domains %in% df_enrichments$domains) %>%
+  group_by(Interpro_domains, RBP_status) %>%
+  count() %>%
+  pivot_wider(names_from = RBP_status, values_from = n) %>%
+  mutate(freq_ratio = ifelse(is.na(non_RBP), Inf, RBP/non_RBP))
+
+ df_enrichments <- df_enrichments %>%
+  left_join(df_HS_ratio, by = c("domains" = "Interpro_domains"))
+
+# Select the enriched domains based on the decided criteria (see Methods)
+df_select <- df_enrichments  %>%
+  filter(interest > 0.005 & enrichment > 2 & p_adj < 0.05 & !(domains %in% list_all_RBDs) & freq_ratio > 1)%>% 
+  arrange(domains) %>%
+  mutate(domains = factor(domains)) %>%
+  left_join(df_domain_ipro, by=c("domains" = "ENTRY_AC"))
+
+write_excel_csv(df_HS_ratio, "Output/New_RBDs/Freq_ratios_new_RBDs.csv")
+
+summary(df_select)
+
+df_select %>%
+  select(domains) %>%
+  unique(.) %>%
+  unlist(.) %>%
+  length(.)
+
+saveRDS(df_enrichments, "Output/New_RBDs/HS_newly_discovered_RBDs_all.RDS")
+saveRDS(df_select, "Output/New_RBDs/HS_newly_discovered_RBDs_select.RDS")
+```
+
+
+## 11.2. Validation of the new RBDs using RNA-binding peptides
+
+Some of the studies compiled in the RBP2GO database have information on the RNA-binding peptides within the detected RBPs. We used this experimental information to validate the newly discovered RBDs. 
+
+```{r preparation of the needed files, message = F, tidy = T, warning = F}
+new_RBDs <- readRDS("Output/New_RBDs/HS_newly_discovered_RBDs_select.RDS") %>% 
+  pull(domains) %>%
+  unique()
+
+# Here we take the list of selected RBDs as a positive control
+sl_RBDs <- readRDS("Output/Extended_RBP2GO/RBD_selected.rds") %>%
+  pull(InterPro_ID) %>%
+  unique()
+
+# And the list of non-selected RBDs as a negative control
+ns_RBDs <- readRDS("Output/Extended_RBP2GO/RBD_all_spec_InterPro_stats.rds")  %>%
+  filter(!InterPro_ID %in% sl_RBDs & InterPro_ID != "") %>%
+  pull(InterPro_ID) %>%
+  unique()
+
+# Load the information on peptides from the studies
+studies_list <- c("HS_Castello", "HS_Mullari", "HS_Panhale", "HS_Queiroz")
+df_studies <- data.frame()
+for (x in studies_list){
+  study <- read.csv(paste0("Input/Downloads/", x, ".csv")) %>%
+    select(c("Uniprot_ID", "site_start", "site_end")) %>%
+    mutate(Dataset = x)
+  df_studies <- rbind(df_studies, study)
+  rm(study)
+}
+
+df_studies <- df_studies %>%
+  separate(col = Uniprot_ID, sep = ";", into = as.character(1:61)) %>%
+  pivot_longer(cols = as.character(1:61), names_to = "name", values_to = "Uniprot_ID") %>%
+  select(-name) %>%
+  filter(!is.na(Uniprot_ID)) %>%
+  unique()
+
+# Make a dataframe with the information from human proteins
+df_HS <- readRDS("Output/Extended_RBP2GO/HS_RBP_extended.rds") %>%
+  select(Uniprot_ID, Interpro_domains, RBD_status) %>%
+  rbind(readRDS("Output/Extended_RBP2GO/HS_non_RBP_extended.rds") %>%
+          select(Uniprot_ID, Interpro_domains, RBD_status))
+
+# Create lists of proteins containing new RBDs, selected RBDs (sl) or non-selected RBDs (ns)
+list_HS_new_RBDs <- df_HS %>%
+  separate_rows(Interpro_domains, sep = ";") %>%
+  filter(Interpro_domains %in% new_RBDs & RBD_status == "no_RBD") %>% 
+  pull(Uniprot_ID) %>%
+  unique()
+
+list_HS_sl_RBDs <- df_HS %>%
+  filter(RBD_status == "RBD" & !Uniprot_ID %in% list_HS_new_RBDs) %>%
+  rowwise() %>%
+  mutate(has_ns_RBD = sum(unlist(lapply(ns_RBDs, grep, Interpro_domains))) > 0) %>%
+  filter(!has_ns_RBD) %>%
+  pull(Uniprot_ID) %>%
+  unique()
+
+list_HS_ns_RBDs <- df_HS %>%
+  separate_rows(Interpro_domains, sep = ";") %>%
+  filter(RBD_status == "no_RBD" & !Uniprot_ID %in% list_HS_new_RBDs & Interpro_domains %in% ns_RBDs) %>%
+  pull(Uniprot_ID) %>%
+  unique()
+
+list_all <- append(list_HS_new_RBDs, list_HS_ns_RBDs) %>%
+  append(list_HS_sl_RBDs)
+```
+
+```{r intersection with peptide data, echo=FALSE}
+## Again, we use the table obtained from the InterPro database
+## We filter it for the human proteins and the InterPro IDs of the new, selected and non-selected RBDs
+df_prots <- read.csv("Input/Downloads/all_prots_protein2ipr.tsv", sep = "\t", header = F) %>% 
+  select(V1, V2, V5, V6) %>%
+  dplyr::rename(Uniprot_ID = V1, Interpro_ID = V2, Domain_start = V5, Domain_end = V6) %>% 
+  filter((Uniprot_ID %in% list_HS_new_RBDs & Interpro_ID %in% new_RBDs)  
+           |(Uniprot_ID %in% list_HS_sl_RBDs & Interpro_ID %in% sl_RBDs) 
+           |(Uniprot_ID %in% list_HS_ns_RBDs & Interpro_ID %in% ns_RBDs)
+         ) %>%
+  mutate(Type = ifelse(Interpro_ID %in% new_RBDs, "new", 
+                       ifelse(Interpro_ID %in% sl_RBDs, "selected", "not_selected"))) %>%
+  unique() 
+
+df_prots %>% saveRDS("Output/New_RBDs/Table_prots_all.rds")
+
+# Using the coordinates, determine if the peptides are overlapping with the InterPro IDs using the bed_merge() function
+df_RBDs <- df_prots %>%
+  dplyr::rename(chrom = Interpro_ID, 
+         start = Domain_start, 
+         end = Domain_end) %>%
+  group_by(Uniprot_ID, Type) %>%
+  bed_merge() %>%
+  dplyr::rename(Interpro_ID = chrom, 
+         Domain_start = start, 
+         Domain_end = end) %>%
+  ungroup() %>%
+  left_join(df_studies) %>% 
+  filter(!is.na(site_start)) %>%
+  mutate(Length = site_end - site_start + 1,
+         criteria_1 = Domain_end - site_start, # This criteria evaluates if the start of a peptide is localized before the end of the domain
+         criteria_2 = site_end - Domain_start) %>% # This criteria evaluates if the end of a peptide is localized after the start of the domain
+  mutate(Overlap = ifelse(criteria_1 <= 0 | criteria_2 <= 0, 0, # Here, the peptide starts after or ends before the domain
+                          ifelse(site_start < Domain_start, 
+                          ifelse(site_end < Domain_end, (site_end - Domain_start)/Length, (Domain_end - Domain_start)/Length), # Calculate the overlap between the peptide and the domain based on the position of the peptide
+                          ifelse(site_end < Domain_end, 1, (Domain_end - site_start)/Length)))) 
+df_RBDs %>% select(Interpro_ID, Type) %>% unique() %>% count(Type)
+
+# Then we can investigate the localization of the peptides in function of the overlap
+
+df_RBDs %>% 
+  filter(Overlap > 0) %>%
+  ggplot()+
+  aes(x = Overlap)+
+  geom_histogram(binwidth = 0.1)+
+  scale_x_continuous(breaks = (0:10)* 0.1)+
+  labs(y = "Number of peptides", x = "Overlap with new RBD")+
+  facet_wrap(~Type, scales = "free_y")+
+  theme_classic()
+
+df_RBDs %>% saveRDS("Output/New_RBDs/Table_overlap_peptides.rds")
+```
+
+```{r creation of tables for plots (normalization with expression), echo=FALSE}
+# To normalize the number of peptides, we need the reference the numbers of domains
+df_RBDs <- readRDS("Output/New_RBDs/Table_overlap_peptides.rds")
+
+# For the final normalization, we will need the number of each InterPro ID in the proteins with at least one overlapping peptide
+table_RBDs_ref <- df_RBDs %>%
+  select(Uniprot_ID, Interpro_ID, Domain_start, Domain_end, Type) %>%
+  unique() %>%
+  count(Interpro_ID, Type) %>%
+  dplyr::rename(nb_domains_ref = n)%>%
+    replace(is.na(.), 0) %>%
+  left_join(readRDS("Output/Extended_RBP2GO/RBD_all_spec_InterPro_stats.rds") %>%
+              select(InterPro_ID, HS_RBP_hit_InterPro) %>%
+              dplyr::rename(HS_RBP_hits = HS_RBP_hit_InterPro, 
+                     Interpro_ID = InterPro_ID)) %>%
+  filter(HS_RBP_hits >= 5 | Type == "new") %>% 
+  select(-HS_RBP_hits)
+
+# Then we can calculate the normalized counts
+df_length <- read.csv("Input/Downloads/Length_prots.tsv", sep = "\t") %>%
+  select(From, Length) %>%
+  dplyr::rename(Uniprot_ID = From, 
+         length_prot = Length)
+
+df_overlap <- df_RBDs %>% 
+  left_join(df_studies %>%  # Calculate the total number of peptides per protein
+    count(Uniprot_ID) %>%
+    dplyr::rename(nb_pep_tot = n)) %>%
+  filter(Overlap >= 0.5) %>%
+  left_join(df_length) %>%
+  mutate(domain_cf = (Domain_end - Domain_start + 1)/length_prot) %>%
+  unique() %>%
+  group_by(Uniprot_ID, Interpro_ID, nb_pep_tot, domain_cf) %>%
+  count() %>%
+  dplyr::rename(nb_pep = n) %>%
+  mutate(norm_pep = nb_pep/nb_pep_tot/domain_cf) %>%
+  group_by(Interpro_ID) %>% 
+  summarise(norm_pep = sum(norm_pep)) 
+  
+# Remove the NAs and normalize the peptides counts
+df_final <- table_RBDs_ref %>%
+  left_join(df_overlap) %>%
+  mutate(norm_pep = ifelse(is.na(norm_pep), 0, norm_pep),  
+         norm_pep_per_domain = norm_pep/nb_domains_ref)
+  
+# Then save the table 
+saveRDS(df_final, "Output/New_RBDs/Number_peptides.rds")
+write_excel_csv(df_final, "Output/New_RBDs/Number_peptides.csv")
+
+rm(list = ls())
+```
+
+## 12. Update of the tables for the RBP2GO database
+
+Here we update the tables for the RBP2GO database, using the tables created during the analysis and calculating the number of RBDs. Thereby, we thereby take into account the 15 new RBDs discovered in the section 10.1.
+
+```{r calculation of number of RBDs per protein with new list + domain score, message = F, tidy = T, warning = F}
+# First we need to update the list of RBDs to include the newly discovered RBDs
+list_RBDs <- readRDS("Output/Extended_RBP2GO/RBD_selected.rds") %>% 
+  select(InterPro_ID) %>%
+  rbind(readRDS("Output/New_RBDs/HS_newly_discovered_RBDs_select.RDS") %>%
+          select(domains) %>%
+          unique() %>%
+          dplyr::rename(InterPro_ID = domains)) %>%
+  pull(InterPro_ID)
+
+# Then we need to have the list of all proteins of the database that have an RBD to parse the information on their domains from InterPro
+species_list <- c("HS", "MM", "SC", "DM", "AT", "CE", "DaR", "EC", "LD", "LM", "PF", "SaE","TB")
+condition_list <- c("RBP", "non_RBP")
+
+df_all <- data.frame()
+for (species in species_list) {
+  for (condition in condition_list) {
+    # Load the corresponding .rds file
+    data <- readRDS(file = paste0("Output/Extended_RBP2GO/", species, "_", condition, "_extended.rds"))
+    # Remove the columns that are not used
+    df <- data %>% 
+      select(., Uniprot_ID, Interpro_domains) %>%
+      unique()
+    df$Species <- species
+    df_all <- rbind(df_all, df) %>% unique()
+    rm(df)
+  }
+}
+
+# Load the length of the proteins, that was downloaded from the UniProt website with the list of RBD-containing proteins
+df_length <- read.csv("Input/Downloads/Length_prots.tsv", sep = "\t") %>%
+  dplyr::rename(Uniprot_ID = From, prot_length = Length) %>%
+  dplyr::select(Uniprot_ID, prot_length) %>%
+  unique()
+
+list_InterPro <- read.csv("Input/Downloads/InterPro_entries.list.tsv", sep = "\t") %>%
+  dplyr::rename(Interpro_ID = ENTRY_AC)
+
+# Load the file with data from InterPro to count the number of RBDs, and the RBD-content fraction (same code as for step 5.)
+ipro <- read.csv("Input/Downloads/all_prots_protein2ipr.tsv", sep ="\t", header = F) %>%
+  select(-c(V3, V4)) %>%
+  dplyr::rename(Uniprot_ID = V1, 
+         Interpro_ID = V2, 
+         start = V5, end = V6) %>%
+  filter(Uniprot_ID %in% df_all$Uniprot_ID & Interpro_ID %in% list_RBDs)
+
+nb_RBDs_indiv <- ipro %>%
+  dplyr::rename(chrom = Interpro_ID) %>%
+  group_by(Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Interpro_ID = chrom) %>%
+  dplyr::count(Uniprot_ID, Interpro_ID) %>% 
+  mutate(n = paste0("[", n, "]")) %>%
+  unite(Interpro_ID, n, col = "nb", sep = " ") %>%
+  group_by(Uniprot_ID) %>%
+  mutate(RBD_list = paste(nb, collapse = ";")) %>%
+  select(-nb) %>%
+  unique() 
+
+nb_RBDs_rep <- ipro %>%
+  left_join(list_InterPro[, 1:2]) %>%
+  filter(ENTRY_TYPE == "Repeat") %>%
+  dplyr::rename(chrom = Interpro_ID) %>%
+  group_by(Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Interpro_ID = chrom, chrom = Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Uniprot_ID = chrom) 
+
+nb_RBDs_tot <- ipro %>%
+  left_join(list_InterPro[, 1:2]) %>%
+  filter(ENTRY_TYPE != "Repeat") %>%
+  dplyr::rename(chrom = Interpro_ID) %>%
+  group_by(Uniprot_ID) %>%
+  bed_merge(.) %>%
+  mutate(end = end-10) %>% # 10 residues are removed from each domain to avoid 
+  # Merging domains that are overlapping by less than 10 amino acids
+  rbind(nb_RBDs_rep) %>% # We add the coordinates of the merged repeats
+  dplyr::rename(Interpro_ID = chrom, chrom = Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Uniprot_ID = chrom) %>%
+  group_by(Uniprot_ID) %>%
+  dplyr::summarise(RBDs_nb = n())
+
+cf_RBDs <- ipro %>%
+  dplyr::rename(chrom = Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Uniprot_ID = chrom) %>%
+  left_join(., df_length, by = "Uniprot_ID") %>% 
+  dplyr::mutate(content_fraction = ((end-start+1)/prot_length)) %>%
+  group_by(Uniprot_ID) %>% # We group the data to calculate the content fraction for each protein separately
+  dplyr::summarise(RBDs_content_fraction = sum(content_fraction)) 
+
+# The data can be aggregated together and used to calculate the component 3 of the RBP2GO composite score = domain_score (see below)
+df_RBDs <- nb_RBDs_indiv %>%
+  left_join(nb_RBDs_tot) %>%
+  left_join(cf_RBDs)
+```
+
+```{r calculate the domain score for each protein, message = F, tidy = T, warning = F}
+# A similar code can be used to calculate the new domain score
+# But with the addition, that we need to integrate the information on the Rfam IDs
+list_fam_IDs <- readRDS("Output/Extended_RBP2GO/Fam_IDs_selected.RDS") %>%
+  pull(InterPro_ID)
+
+# The quality factor for each InterPro ID is calculated according to the rules given in the method section of the manuscript
+quality_factors <- readRDS("Output/Extended_RBP2GO/RBD_selected.rds") %>%
+  rbind(readRDS("Output/Extended_RBP2GO/Fam_IDs_selected.RDS")) %>% 
+  mutate(freq_ratio = ifelse(HS_Freq_ratio>0, HS_Freq_ratio, 
+         ifelse(MM_Freq_ratio > 0, MM_Freq_ratio, 
+                ifelse(SC_Freq_ratio > 0, SC_Freq_ratio, 
+                       ifelse(DM_Freq_ratio > 0, DM_Freq_ratio, 
+                              ifelse(AT_Freq_ratio > 0, AT_Freq_ratio, 
+                                     ifelse(CE_Freq_ratio > 0, CE_Freq_ratio, 
+                                            ifelse(PF_Freq_ratio > 0, PF_Freq_ratio, 
+                                                   ifelse(EC_Freq_ratio > 0, EC_Freq_ratio, 
+                                                          ifelse(DaR_Freq_ratio > 0, DaR_Freq_ratio, 
+                                                                 ifelse(TB_Freq_ratio > 0, TB_Freq_ratio, 
+                                                                        ifelse(SaE_Freq_ratio > 0, SaE_Freq_ratio, 
+                                                                               ifelse(LM_Freq_ratio > 0, LM_Freq_ratio, LD_Freq_ratio)))))))))))), 
+         hit_RBPs = ifelse(HS_RBP_hit_InterPro>0, HS_RBP_hit_InterPro, 
+         ifelse(MM_RBP_hit_InterPro > 0, MM_RBP_hit_InterPro, 
+                ifelse(SC_RBP_hit_InterPro > 0, SC_RBP_hit_InterPro, 
+                       ifelse(DM_RBP_hit_InterPro > 0, DM_RBP_hit_InterPro, 
+                              ifelse(AT_RBP_hit_InterPro > 0, AT_RBP_hit_InterPro, 
+                                     ifelse(CE_RBP_hit_InterPro > 0, CE_RBP_hit_InterPro, 
+                                            ifelse(PF_RBP_hit_InterPro > 0, PF_RBP_hit_InterPro, 
+                                                   ifelse(EC_RBP_hit_InterPro > 0, EC_RBP_hit_InterPro, 
+                                                          ifelse(DaR_RBP_hit_InterPro > 0, DaR_RBP_hit_InterPro, 
+                                                                 ifelse(TB_RBP_hit_InterPro > 0, TB_RBP_hit_InterPro, 
+                                                                        ifelse(SaE_RBP_hit_InterPro > 0, SaE_RBP_hit_InterPro, 
+                                                                               ifelse(LM_RBP_hit_InterPro > 0, LM_RBP_hit_InterPro, LD_RBP_hit_InterPro))))))))))))) %>%
+  select(InterPro_ID, hit_RBPs, freq_ratio)%>%
+  rbind(read.csv("Output/New_RBDs/Freq_ratios_new_RBDs.csv") %>%
+          select(-non_RBP)%>%
+          dplyr::rename(InterPro_ID = Interpro_domains, 
+                 hit_RBPs = RBP) %>%
+          filter(InterPro_ID %in% list_RBDs)) %>%
+  mutate(quality_factor = ifelse(freq_ratio < 2, 1, 
+                                 ifelse(freq_ratio < 4, 2, 
+                                        ifelse(freq_ratio < 8, 3, 
+                                               ifelse(freq_ratio < 16, 4, 
+                                                      ifelse(freq_ratio < Inf, 5, 
+                                                             ifelse(hit_RBPs <= 2, 2, 
+                                                                    ifelse(hit_RBPs <= 4, 3, 
+                                                                           ifelse(hit_RBPs <= 8, 4, 5))))))))
+         ) %>%
+  select(InterPro_ID, quality_factor) %>%
+  dplyr::rename(Interpro_ID = InterPro_ID)
+
+ domain_score<- read.csv("Input/Downloads/all_prots_protein2ipr.tsv", sep ="\t", header = F) %>%
+  select(-c(V3, V4)) %>%
+  dplyr::rename(Uniprot_ID = V1, 
+         Interpro_ID = V2, 
+         start = V5, end = V6) %>%
+  filter(Uniprot_ID %in% df_all$Uniprot_ID) %>%
+  filter(Interpro_ID %in% list_RBDs | Interpro_ID %in% list_fam_IDs) %>%
+  dplyr::rename(chrom = Interpro_ID) %>%
+  group_by(Uniprot_ID) %>%
+  bed_merge(.) %>%
+  dplyr::rename(Interpro_ID = chrom) %>%
+  dplyr::count(Uniprot_ID, Interpro_ID) %>%
+  mutate(n = ifelse(Interpro_ID %in% list_fam_IDs, 1, n)) %>% # Here we always set the number of Rfam IDs to 1
+  left_join(quality_factors) %>%
+  mutate(score = n*quality_factor) %>%
+  group_by(Uniprot_ID) %>%
+  summarise(Domain_score = ifelse(sum(score)>25, 25, sum(score)))
+
+summary(domain_score)
+```
+
+```{r update of the files for the database, message = F, tidy = T, warning = F}
+# For the database, we need to add the information about the RBDs and calculate the new RBP2GO composite score
+
+for(species in species_list){
+  for(condition in condition_list){
+    # We open the tables created in the analysis with the information on the Rfam IDs
+    df <- readRDS(paste0("Output/Extended_RBP2GO/", species, "_", condition, "_", "extended.rds")) %>%
+      dplyr::select(-c("Pfam_domains", "RBD_InterPro", "RBD_status", "RBDs_nb", "RBDs_content_fraction", "InterPro")) %>% 
+      dplyr::rename(InterPro = Interpro_domains, 
+             has_IDR = IDR_status, 
+             Fam_ID_list = Fam_ID_InterPro) %>% 
+      left_join(df_RBDs) %>% # Now we need to add the information about the RBDs using the table created previously
+      left_join(domain_score) %>% # Finally we can add the new RBP2GO composite score
+      mutate(has_IDR = ifelse(has_IDR == "IDR", "Yes", "No"), # We  change the content of the columns
+             has_fam_ID = ifelse(has_fam_ID == T, "Yes", "No"), # And replace the NAs by 0 values
+             Fam_ID_list = ifelse(is.na(Fam_ID_list), "", Fam_ID_list), 
+             RBDs_nb = ifelse(is.na(RBDs_nb), 0, RBDs_nb),
+             RBDs_content_fraction = ifelse(is.na(RBDs_content_fraction) & RBDs_nb ==0, 0, RBDs_content_fraction),
+             RBD_list = ifelse(is.na(RBD_list), "", RBD_list),
+             has_RBD = ifelse(RBDs_nb > 0, "Yes", "No"), 
+             Domain_score = ifelse(is.na(Domain_score), 0, Domain_score), 
+             InterPro = ifelse(is.na(InterPro), "", InterPro), 
+             Composite_Score = Listing_Count/Nb_Datasets*50 + AVG10_Int_Listing_Count/Nb_Datasets*25 + Domain_score) %>%
+      relocate(InterPro, has_RBD, RBDs_nb, RBDs_content_fraction, RBD_list, has_fam_ID, Fam_ID_list, Domain_score, Composite_Score, .after = List_RBP_Homologs) %>%
+      relocate(Entry_Name)
+    
+    if (condition == "RBP"){
+      saveRDS(df, paste0("Output/Database_update/table_", species, "_Dataset.RDS"))
+      }
+    else{
+      saveRDS(df, paste0("Output/Database_update/table_", species, "_Non_Listed_Proteins.RDS"))
+      }
+  }
+}
+
+rm(list = ls())
+```
+
+
+# 13. Sanity check
+
+Here, we generate some tables for the new RBDs and the new RBP2GO composite score.
+
+```{r verify new RBDs, message=F, tidy=TRUE, warning=FALSE, results='markup'}
+species_list <- c("HS", "MM", "SC", "DM", "AT", "CE", "DaR", "EC", "LD", "LM", "PF", "SaE","TB")
+condition_list <- c("RBP", "non_RBP")
+
+# Load the list of selected RBDs and newly-discovered RBDs
+list_sl_RBDs <- readRDS("Output/Extended_RBP2GO/Combined_RBD_list.rds") %>% pull(InterPro_ID) %>% unique()
+list_new_RBDs <- readRDS("Output/New_RBDs/HS_newly_discovered_RBDs_select.RDS") %>% pull(domains) %>% unique()
+
+# Compile all the information into a single dataframe
+df_all <- data.frame()
+for (species in species_list){
+  for (condition in condition_list){
+    data <- readRDS(paste0("Output/Extended_RBP2GO/",species,"_", condition, "_extended.rds")) %>%
+      select(Uniprot_ID, Entry_Name, RBP_status, RBD_status, Interpro_domains) %>%
+      mutate(Species = species)
+    df_all <- rbind(df_all, data) %>%
+      data.frame()
+    rm(data)
+  }
+}
+
+# Count the number of proteins that have a selected and/or a new RBD
+new_RBDs <- df_all %>%
+  rowwise() %>%
+  mutate(has_new_RBD = ifelse(lapply(list_new_RBDs, grepl, Interpro_domains)
+                             %>% unlist() 
+                             %>% sum() > 0, "Yes", "No"), 
+         has_sl_RBD = ifelse(RBD_status == "RBD", "Yes", "No")) %>%
+  count(Species, RBP_status, has_sl_RBD, has_new_RBD) %>%
+  pivot_wider(values_from = "n", names_from = "Species", values_fill = 0) 
+
+# Save the table in a csv file
+write_excel_csv(new_RBDs, "Output/New_RBDs/Sanity_check_new_RBDs.csv", col_names = T)
+
+rm(list=ls()[! ls() %in% c("species_list", "condition_list")])
+```
+
+```{r verify new score, message=F, tidy=TRUE, warning=FALSE, results='markup'}
+# Compile all the information into a single dataframe
+df_all <- data.frame()
+for (species in species_list){
+  for (condition in condition_list){
+    data <- readRDS(paste0("Output/Database_update/table_",species,"_", ifelse(condition=="RBP", "Dataset", "Non_Listed_Proteins"), ".RDS")) %>% 
+      select(Uniprot_ID, RBP_status, Nb_Datasets,  Listing_Count, AVG10_Int_Listing_Count, Domain_score) %>%
+      mutate(Species = species, 
+             List_Count_norm = Listing_Count/Nb_Datasets*50, 
+             AVG10_Int_List_Count_norm = AVG10_Int_Listing_Count/Nb_Datasets*25)
+    df_all <- rbind(df_all, data) %>%
+      data.frame()
+    rm(data)
+  }
+}
+
+new_score <- df_all %>%
+  mutate(List_Count_norm = cut(List_Count_norm, breaks = 0:10*5, 
+      labels = c("0-5", "5-10", "10-15", "15-20", "20-25", "25-30", "30-35", "35-40", "40-45", "45-50"), 
+      include.lowest = F), 
+      AVG10_Int_List_Count_norm = cut(AVG10_Int_List_Count_norm, breaks = 0:10*5, 
+      labels = c("0-5", "5-10", "10-15", "15-20", "20-25", "25-30", "30-35", "35-40", "40-45", "45-50"), 
+      include.lowest = F), 
+      Domain_score = cut(Domain_score, breaks = 0:10*5, 
+      labels = c("0-5", "5-10", "10-15", "15-20", "20-25", "25-30", "30-35", "35-40", "40-45", "45-50"), 
+      include.lowest = F))
+
+distrib <- new_score %>%
+  count(List_Count_norm) %>% 
+  dplyr::rename(score = List_Count_norm, 
+         List_Count_norm = n) %>%
+  left_join(new_score %>%
+  count(AVG10_Int_List_Count_norm) %>% 
+  dplyr::rename(score = AVG10_Int_List_Count_norm, 
+         AVG10_Int_List_Count_norm = n)) %>%
+  left_join(new_score %>%
+  count( Domain_score) %>% 
+  dplyr::rename(score = Domain_score, 
+         Domain_score = n))
+
+zeroes <- df_all %>%
+  filter(List_Count_norm == 0 ) %>%
+  count(Species) %>%
+  dplyr::rename(n_list = n) %>%
+  left_join(df_all %>%
+              filter(AVG10_Int_List_Count_norm == 0 ) %>%
+              count(Species) %>%
+              dplyr::rename(n_int = n)) %>%
+  left_join(df_all %>%
+              filter(Domain_score == 0 ) %>%
+              count(Species) %>%
+              dplyr::rename(n_dom = n)) %>%
+  left_join(df_all %>%
+              count(Species) %>%
+              dplyr::rename(n_tot = n)) %>%
+  mutate(frac_comp1_0 = n_list/n_tot, 
+         frac_comp2_0 = n_int/n_tot, 
+         frac_comp3_0 = n_dom/ n_tot) %>%
+  arrange(factor(Species, levels = species_list)) %>%
+  select(-c(n_list, n_int, n_dom))
+
+write_excel_csv(distrib, "Output/New_score/Distribution_new_score.csv", col_names = T)
+write_excel_csv(zeroes, "Output/New_score/Null_values_new_score.csv", col_names = T)
+
+rm(list = ls())
+```
+
+
+# 14. Creation of the list of high confidence human RBPs
+
+```{r list of high confidence RBPs, message = F, tidy = T, warning = F}
+condition_list <- c("RBP", "non_RBP")
+
+# Load the data for human proteins
+
+df_hs <- data.frame()
+for (condition in condition_list) {
+    # Load the corresponding .csv file
+    df <- readRDS(file = paste0("Output/Database_update/table_HS_", ifelse(condition == "RBP", "Dataset", "Non_Listed_Proteins"), ".RDS")) %>% 
+      dplyr::select(Uniprot_ID, RBP2GO_Score, Composite_Score, has_RBD, RBDs_nb, RBDs_content_fraction, has_fam_ID, has_IDR, IDR_content_fraction, Nb_Datasets, Listing_Count, AVG10_Int_Listing_Count, Domain_score) %>%
+      mutate(Component_1 = Listing_Count/Nb_Datasets * 50, 
+             Component_2 = AVG10_Int_Listing_Count/Nb_Datasets * 25,
+             Component_3 = Domain_score)
+    # Remove the columns that are not used
+    df$RBP_status <- condition
+    df_hs <- rbind(df_hs, df)
+    rm(df)
+  }
+
+# Create a new column to detect whether the protein has an RNA-releated annotations (RBD of Rfam ID)
+df_hs %>%
+  rowwise() %>%
+  mutate(has_annot = ifelse(has_RBD == "Yes" | has_fam_ID == "Yes", "Yes", "No"), 
+         test =  sum(Component_1 > 0, Component_2 > 0, Component_3 > 0))%>% 
+  filter(Composite_Score >= 10  & test >1) %>% # Select the proteins with the criteria as described in the method section of the manuscript
+  select(-matches(c("Component", "test"))) %>%
+  write_excel_csv("Output/Extended_RBP2GO/High_confidence_human_RBPs.csv")
+```
+
+
+# 15. Concluding remarks
+
+This is the end of the analysis script.
+All the datasets created during the analysis are stored in the "Output" folder.
+
+The accompanying script "RBP2GO_RBD_Analysis_Figures.Rmd" was used to created the figures as found in the manuscript. The figures are based on the datasets that were created in the above analysis.
+
+An advanced version of the RBP2GO database includes detailed knowledge on RBDs and Rfam IDs and can be accessed using this link: RBP2GO.dkfz.de
+RBP2GO was developed as a R Shiny App. The code for the RBP2GO App can be downloaded directly from the database, under the HELP section of the 
+sidebar menu.
+
