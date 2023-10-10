@@ -5,10 +5,8 @@ date: "2023-07-28"
 output: html_document
 ---
 
-###### Dependencies
--   needs GO_list.csv
-
 ###### Packages needed
+
 ```{r libraries, eval=T, include=T, tidy=TRUE}
 library(AnnotationDbi)
 library(GO.db)
@@ -684,7 +682,7 @@ table_Dataset_overview$Composite_Score = NA
 
 #rearranging columns to bring them in the correct order
 table_Dataset_overview = table_Dataset_overview[,c(2,1,3,29,30,31,32,4,5,12,6,7,20,21, 28,8,9,10,13,14,15,17,18,19,33,34,35,36,11,26,23,24,22,37,38,39,40,27,25,16)]
-saveRDS(table_Dataset_overview, "C:/Users/ennow/Enno_PC/Hiwi/table_RN_Dataset_overview.RDS")
+saveRDS(table_Dataset_overview, "table_RN_Dataset_overview.RDS")
 
 
 # use RBPs to split up into two dataframes

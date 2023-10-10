@@ -5,10 +5,6 @@ date: "2023-07-28"
 output: html_document
 ---
 
-###### Dependencies
--   needs GO_list.csv
-(used in R 4.3.1)
-
 ###### Packages needed (first trouble shoot here if something is not working!)
 
 ```{r libraries, eval=T, include=T, tidy=TRUE}
@@ -96,7 +92,7 @@ list_InterPro <- read.csv("../Input/Downloads/InterPro_entries.list.tsv", sep = 
 
 
 #download all InterPro_IDs from InterPro for your species directly by looking for the taxonomy and choosing TSV as a format: That way all the required columns will be included
-list_fam_IDs <- read_tsv("../Input/Downloads/RN_famIDs.tsv", show_col_types = FALSE)
+list_fam_IDs <- read_tsv("../Input/Downloads/SP_famIDs.tsv", show_col_types = FALSE)
 list_fam_IDs %>%
   dplyr::select(Accession, Name, Type) %>%
   dplyr::rename(Interpro_ID = Accession, name = Name) %>%
@@ -516,7 +512,7 @@ table_Dataset$has_RBD = ifelse(table_Dataset$RBDs_nb > 0, "Yes", "No")
 
 Domain score is chunk 30 (step 12) 
 ```{r}
-stop("On the 7.10.2023, this did not work yet. Therefore, the scores with Fabios script were not able to be calculated as his script relies on the domain score. At the moment, the domain score gives out scores for proteins that are not of the required species. It also gives out only 600 results out of more than 8,200 proteins (proteome size for RN).")
+stop("On the 7.10.2023, this did not work yet when I tested it for Rattus. However, I did not test it for pombe and just assumed that the same thing as for Rattus applies. With this I mean that the function would give out too few domain scores which are also for Uniprot IDs belonging to other species.")
 domain_score <- ipro %>% 
   dplyr::select(Uniprot_ID, Interpro_ID, start, end) %>%
   filter(Uniprot_ID %in% table_Dataset$Uniprot_ID) %>%
@@ -599,11 +595,10 @@ table_Dataset_overview$Composite_Score = NA
 
 #rearranging columns to bring them in the correct order
 table_Dataset_overview <- table_Dataset_overview[,c(2,1,3,29,30,31,32,4,5,12,6,7,20,21, 28,8,9,10,13,14,15,17,18,19,33,34,35,36,11,26,23,24,22,37,38,39,40,27,25,16)]
-#saveRDS(table_Dataset_overview, "C:/Users/ennow/Enno_PC/Hiwi/table_SP_Dataset_overview.RDS")
+saveRDS(table_Dataset_overview, "table_SP_Dataset_overview.RDS")
 
 
 # use RBPs to split up into two dataframes
-stop("07.10.23 /// From the 747 (with replicates 1073) identified RBPs, only 305 are present in the dataset. This seems bad.")
 #table_XX_Dataset = table_Dataset [table_Dataset$RBP_status == "RBP",]
 #saveRDS(table_XX_Dataset, "../Output/Database_update/table_RN_Dataset.RDS")
 
