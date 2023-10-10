@@ -1,8 +1,14 @@
-In this folder, you can find code that was used to add additional species. The code serves as an orientation as for the addition of a new species many steps need to be done manually. However, in [create_table_XX_dataset.Rmd](create_table_XX_dataset.Rmd) one can find a guide for adding a new species.
+Files 
+-----------------------------------
+In this folder, you can find code that was used to add additional species. The code serves as an orientation as for the addition of a new species many steps need to be done manually. Additionally, multiple steps are systemically identical, but vary in the details.However, in [In this file](create_table_RN_dataset.Rmd) I started creating the dataset for Rattus norvegicus, [in this one](create_table_SP_dataset.Rmd) I did the same for Schizosaccharomyces pombe.
 
+
+Columns to create in the Datasets 
+-----------------------------------
 For orientation purposes, you can find a detailed description for every column of the *table_XX_Dataset.rds* below. It is also listed which databank the information from the column comes from. The *table_XX_Non_Listed_Proteins.rds* columns are identical, except for the column identifying the proteins as RBPs or non-RBPs. Each row represents a protein, all rows constitute the proteome that is considered by RBP2GO.
-  - Entry name: Short ID-like label, less consistent then the Uniprot_ID
-  - Uniprot_ID: unique ID for each protein given by Uniprot. Most consistent ID, therefore this column is the main identifier to match data from different datasets to the same protein
+
+  - Entry name (string): Short ID-like label, less consistent then the Uniprot_ID
+  - Uniprot_ID (string): unique ID for each protein given by Uniprot. Most consistent ID, therefore this column is the main identifier to match data from different datasets to the same protein
   - Protein_Name (string): Name of the protein
   - RBP2GO_Score (float): */*
   - Nb_Datasets (int): Amount of studies identifying RBPs
